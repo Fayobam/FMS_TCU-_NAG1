@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FMS TCU Calibration Studio</title>
+    <style>
+        :root {
+            --bg: #0f172a; --panel: rgba(30, 41, 59, 0.7); --border: rgba(255, 255, 255, 0.1);
+            --cyan: #22d3ee; --purple: #c084fc; --orange: #fb923c; --rose: #fb7185;
+            --emerald: #34d399; --slate-400: #94a3b8; --slate-500: #64748b; --slate-800: #1e293b; --white: #f8fafc;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background-color: var(--bg); color: var(--white); min-height: 100vh; padding: 1rem; display: flex; flex-direction: column; }
+        .glass-panel { background: var(--panel); backdrop-filter: blur(10px); border: 1px solid var(--border); border-radius: 1.25rem; padding: 1.25rem; }
+        
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+        .tabs { display: flex; gap: 1rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--slate-800); padding-bottom: 0.5rem; }
+        .tab { background: none; border: none; color: var(--slate-500); font-size: 1rem; font-weight: 800; cursor: pointer; padding: 0.5rem 1rem; text-transform: uppercase; transition: color 0.2s; }
+        .tab.active { color: var(--cyan); border-bottom: 2px solid var(--cyan); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* Dashboard Styles */
+        .main-grid { display: grid; gap: 1rem; }
+        @media (min-width: 768px) {
+            .main-grid { grid-template-columns: repeat(12, 1fr); }
+            .col-left { grid-column: span 4; display: flex; flex-direction: column; gap: 1rem; }
+            .col-right { grid-column: span 8; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+            .span-full { grid-column: span 2; }
+            .span-three { grid-template-columns: repeat(3, 1fr); display: grid; gap: 1rem; align-items: center; }
+        }
+        .data-font { font-family: ui-monospace, monospace; }
+        .prnd-text { font-size: 5rem; font-weight: 900; line-height: 1; text-shadow: 0 0 15px var(--cyan); }
+        .progress-bg { background: var(--slate-800); border-radius: 999px; height: 8px; width: 100%; margin-top: 4px; overflow: hidden; }
+        .progress-fill { height: 100%; transition: width 0.2s ease; border-radius: 999px; }
+        .label { font-size: 0.7rem; color: var(--slate-400); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; display: block; }
+        .status-box { background: rgba(30, 41, 59, 0.4); padding: 0.75rem; border-radius: 0.75rem; text-align: center; border: 1px solid transparent; transition: all 0.3s; }
+        
+        /* Tuner Styles */
+        .tuner-controls { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+        select, button { background: var(--slate-800); color: var(--white); border: 1px solid var(--slate-500); padding: 0.5rem 1rem; border-radius: 0.5rem; font-weight: bold; cursor: pointer; outline: none;}
+        button.primary { background: var(--cyan); color: var(--bg); border: none; }
+        
+        .grid-container { overflow-x: auto; background: var(--slate-800); padding: 1rem; border-radius: 1rem; border: 1px solid var(--border); }
+        .tuner-grid { display: grid; grid-template-columns: 60px repeat(16, 50px); gap: 4px; width: max-content; }
+        .grid-cell { background: var(--bg); border: 1px solid var(--slate-500); color: var(--white); text-align: center; font-size: 0.8rem; border-radius: 4px; padding: 4px; font-family: monospace; }
+        .grid-header { background: transparent; border: none; font-weight: bold; color: var(--slate-400); font-size: 0.7rem; display: flex; align-items: center; justify-content: center; }
+        input.grid-cell { width: 100%; height: 100%; outline: none; transition: background 0.2s; }
+        input.grid-cell:focus { border-color: var(--cyan); background: rgba(34, 211, 238, 0.1); }
+        
+        .connection-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .conn-live { background: var(--emerald); box-shadow: 0 0 10px var(--emerald); animation: pulse 2s infinite; }
+        .conn-off { background: var(--rose); }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body>
+
+    <header class="glass-panel header">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--cyan)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+            <div>
+                <h1 style="font-size: 1.25rem; font-weight: 900; letter-spacing: -0.02em;">FMS <span style="color: var(--cyan);">TCU</span></h1>
+                <p class="label" style="font-size: 9px; margin: 0;">Fayobam's Manual Sporty TCU</p>
+            </div>
+        </div>
+        <div style="display: flex; align-items: center; background: rgba(0,0,0,0.2); padding: 6px 12px; border-radius: 999px;">
+            <div id="connection-dot" class="connection-dot conn-off"></div>
+            <span id="connection-text" style="font-size: 0.7rem; font-weight: 800; color: var(--rose);">OFFLINE</span>
+        </div>
+    </header>
+
+    <div class="tabs">
+        <button class="tab active" onclick="switchTab('dashboard')">Telemetry</button>
+        <button class="tab" onclick="switchTab('tuner')">Calibration Studio</button>
+    </div>
+
+    <!-- DASHBOARD TAB -->
+    <main id="tab-dashboard" class="tab-content active main-grid">
+        <div class="col-left">
+            <div class="glass-panel" style="text-align: center;">
+                <span class="label">Shift Selection</span>
+                <div style="display: flex; align-items: flex-end; justify-content: center; gap: 1rem;">
+                    <span id="prnd-val" class="prnd-text">P</span>
+                    <div style="text-align: left; padding-bottom: 10px;">
+                        <span class="label">Gear</span>
+                        <span id="gear-val" class="data-font" style="font-size: 2.5rem; font-weight: 800; color: var(--cyan);">1</span>
+                    </div>
+                </div>
+            </div>
+            <div class="glass-panel" style="display: flex; flex-direction: column; gap: 1rem;">
+                <div>
+                    <div style="display:flex; justify-content: space-between;"><span class="label">Engine RPM</span><span id="eng-rpm-val" class="data-font">0</span></div>
+                    <div class="progress-bg"><div id="eng-rpm-bar" class="progress-fill" style="width: 0%; background: var(--cyan);"></div></div>
+                </div>
+                <div>
+                    <div style="display:flex; justify-content: space-between;"><span class="label">Turbine RPM</span><span id="turb-rpm-val" class="data-font">0</span></div>
+                    <div class="progress-bg"><div id="turb-rpm-bar" class="progress-fill" style="width: 0%; background: var(--purple);"></div></div>
+                </div>
+                <div>
+                    <div style="display:flex; justify-content: space-between;"><span class="label">Output RPM</span><span id="out-rpm-val" class="data-font">0</span></div>
+                    <div class="progress-bg"><div id="out-rpm-bar" class="progress-fill" style="width: 0%; background: var(--emerald);"></div></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-right">
+            <div class="glass-panel span-full" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                <div>
+                    <span class="label">Throttle Position</span>
+                    <div class="data-font" style="font-size: 2.25rem; font-weight: 800;"><span id="tps-val">0.0</span><span style="font-size: 1.25rem;">%</span></div>
+                    <div class="progress-bg"><div id="tps-bar" class="progress-fill" style="width: 0%; background: var(--orange);"></div></div>
+                </div>
+                <div style="border-left: 1px solid var(--border); padding-left: 1.5rem;">
+                    <span class="label">MAP (Boost)</span>
+                    <div class="data-font" style="font-size: 2.25rem; font-weight: 800;"><span id="map-val">0.0</span><span style="font-size: 1.25rem;">kPa</span></div>
+                    <div class="progress-bg"><div id="map-bar" class="progress-fill" style="width: 0%; background: var(--rose);"></div></div>
+                </div>
+            </div>
+            
+            <div class="glass-panel" style="text-align:center;">
+                <span class="label">Line Pressure</span>
+                <div id="mpc-val" class="data-font" style="font-size: 2.25rem; font-weight: 900; color: var(--cyan);">0%</div>
+                <div class="progress-bg" style="height: 16px;"><div id="mpc-bar" class="progress-fill" style="width: 0%; background: var(--cyan);"></div></div>
+            </div>
+            <div class="glass-panel" style="text-align:center;">
+                <span class="label">Shift Pressure</span>
+                <div id="spc-val" class="data-font" style="font-size: 2.25rem; font-weight: 900; color: var(--purple);">0%</div>
+                <div class="progress-bg" style="height: 16px;"><div id="spc-bar" class="progress-fill" style="width: 0%; background: var(--purple);"></div></div>
+            </div>
+
+            <!-- NEW: TCC SLIP TRACKER -->
+            <div class="glass-panel span-full">
+                <span class="label" style="margin-bottom: 0.75rem;">Torque Converter Clutch (TCC)</span>
+                <div class="span-three">
+                    <div style="text-align:center;">
+                        <span class="label" style="color:var(--slate-500);">Lockup PWM</span>
+                        <div id="tcc-pwm-val" class="data-font" style="font-size: 1.8rem; font-weight: 900; color: var(--emerald);">0%</div>
+                        <div class="progress-bg" style="height: 8px;"><div id="tcc-pwm-bar" class="progress-fill" style="width: 0%; background: var(--emerald);"></div></div>
+                    </div>
+                    <div class="status-box">
+                        <span class="label" style="color:var(--slate-500);">Target Slip</span>
+                        <span id="tcc-target-val" class="data-font" style="font-size: 1.5rem; font-weight:bold; color: var(--slate-300);">-- RPM</span>
+                    </div>
+                    <div class="status-box">
+                        <span class="label" style="color:var(--slate-500);">Actual Slip</span>
+                        <span id="tcc-actual-val" class="data-font" style="font-size: 1.5rem; font-weight:bold; color: var(--slate-300);">-- RPM</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="glass-panel span-full">
+                <span class="label" style="margin-bottom: 0.75rem;">Adaptive Metrics</span>
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem;">
+                    <div class="status-box"><span class="label" style="color:var(--slate-500);">Duration</span><span id="shift-time-val" class="data-font">-- ms</span></div>
+                    <div class="status-box"><span class="label" style="color:var(--slate-500);">Ratio</span><span id="ratio-val" class="data-font">0.00</span></div>
+                    <div class="status-box" id="flare-box"><span class="label" style="color:var(--slate-500);">Flare</span><span id="flare-val" class="data-font" style="color:var(--slate-400);">CLEAN</span></div>
+                    <div class="status-box" id="bind-box"><span class="label" style="color:var(--slate-500);">Bind</span><span id="bind-val" class="data-font" style="color:var(--slate-400);">CLEAN</span></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- CALIBRATION TUNER TAB -->
+    <main id="tab-tuner" class="tab-content glass-panel" style="flex-grow: 1;">
+        <div class="tuner-controls">
+            <select id="tune-shift">
+                <optgroup label="Upshifts">
+                    <option value="0_up">1 -> 2 Upshift</option>
+                    <option value="1_up">2 -> 3 Upshift</option>
+                    <option value="2_up">3 -> 4 Upshift</option>
+                    <option value="3_up">4 -> 5 Upshift</option>
+                </optgroup>
+                <optgroup label="Downshifts">
+                    <option value="0_down">2 -> 1 Downshift</option>
+                    <option value="1_down">3 -> 2 Downshift</option>
+                    <option value="2_down">4 -> 3 Downshift</option>
+                    <option value="3_down">5 -> 4 Downshift</option>
+                </optgroup>
+            </select>
+            <select id="tune-type">
+                <option value="p">Pressure Modifiers (%)</option>
+                <option value="f">Timing Modifiers (ms)</option>
+            </select>
+            <button onclick="requestTable()">Fetch from TCU</button>
+            <button class="primary" onclick="flashTable()" style="margin-left: auto;">Flash to Hardware</button>
+        </div>
+
+        <div class="grid-container">
+            <div class="tuner-grid" id="tuner-grid">
+                <!-- Javascript will generate the 16x16 grid here -->
+            </div>
+        </div>
+        <p style="font-size: 0.7rem; color: var(--slate-400); margin-top: 1rem; text-align: right;">* Green = Subtracted Pressure/Time | Red = Added Pressure/Time</p>
+    </main>
+
+    <footer class="mt-auto pt-8 pb-2 text-center text-[10px] text-slate-800 tracking-widest uppercase select-none opacity-40">
+        Engineered by Fayobam &bull; ModernizedClassics
+    </footer>
+
+    <script>
+        // ----------------------------------------------------
+        // UI & GRID GENERATION
+        // ----------------------------------------------------
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('tab-' + tabId).classList.add('active');
+        }
+
+        const grid = document.getElementById('tuner-grid');
+        grid.innerHTML = '<div class="grid-header">Load \\ RPM</div>';
+        
+        for(let rpm = 0; rpm < 16; rpm++) {
+            grid.innerHTML += `<div class="grid-header">${400 + (rpm * 400)}</div>`;
+        }
+
+        let inputs = [];
+        for(let load = 0; load < 16; load++) {
+            grid.innerHTML += `<div class="grid-header">${load * 10}%</div>`;
+            for(let rpm = 0; rpm < 16; rpm++) {
+                grid.innerHTML += `<input type="number" class="grid-cell" id="cell_${load}_${rpm}" value="0" onchange="colorCell(this)">`;
+            }
+        }
+
+        for(let load = 0; load < 16; load++) {
+            for(let rpm = 0; rpm < 16; rpm++) {
+                inputs.push(document.getElementById(`cell_${load}_${rpm}`));
+            }
+        }
+
+        function colorCell(input) {
+            const val = parseInt(input.value) || 0;
+            if (val < 0) input.style.color = 'var(--emerald)';
+            else if (val > 0) input.style.color = 'var(--rose)';
+            else input.style.color = 'var(--white)';
+        }
+
+        // ----------------------------------------------------
+        // WEBSOCKET LOGIC (V6.1)
+        // ----------------------------------------------------
+        const ws = new WebSocket(`ws://${window.location.hostname}/ws`);
+        
+        ws.onopen = () => {
+            document.getElementById('connection-dot').className = 'connection-dot conn-live';
+            document.getElementById('connection-text').style.color = 'var(--emerald)';
+            document.getElementById('connection-text').innerText = 'LIVE';
+        };
+
+        ws.onclose = () => {
+            document.getElementById('connection-dot').className = 'connection-dot conn-off';
+            document.getElementById('connection-text').style.color = 'var(--rose)';
+            document.getElementById('connection-text').innerText = 'OFFLINE';
+        }
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === "telemetry") {
+                // Update Basic Gauges
+                document.getElementById('prnd-val').innerText = data.prnd;
+                document.getElementById('gear-val').innerText = data.gear;
+                
+                document.getElementById('eng-rpm-val').innerText = Math.round(data.engRpm);
+                document.getElementById('eng-rpm-bar').style.width = Math.min(100, (data.engRpm / 7000 * 100)) + '%';
+                
+                document.getElementById('turb-rpm-val').innerText = Math.round(data.turbRpm);
+                document.getElementById('turb-rpm-bar').style.width = Math.min(100, (data.turbRpm / 7000 * 100)) + '%';
+                
+                document.getElementById('out-rpm-val').innerText = Math.round(data.outRpm);
+                document.getElementById('out-rpm-bar').style.width = Math.min(100, (data.outRpm / 7000 * 100)) + '%';
+                
+                document.getElementById('tps-val').innerText = data.tps.toFixed(1);
+                document.getElementById('tps-bar').style.width = Math.min(100, data.tps) + '%';
+                
+                document.getElementById('map-val').innerText = data.map.toFixed(1);
+                document.getElementById('map-bar').style.width = Math.min(100, (data.map / 200 * 100)) + '%';
+                
+                document.getElementById('mpc-val').innerText = data.mpc + '%';
+                document.getElementById('mpc-bar').style.width = data.mpc + '%';
+                
+                document.getElementById('spc-val').innerText = data.spc + '%';
+                document.getElementById('spc-bar').style.width = data.spc + '%';
+
+                // Update TCC Gauges
+                document.getElementById('tcc-pwm-val').innerText = data.tccPwm + '%';
+                document.getElementById('tcc-pwm-bar').style.width = data.tccPwm + '%';
+                
+                let targetSlip = Math.round(data.tccTarget);
+                let actualSlip = Math.round(data.tccActual);
+                
+                document.getElementById('tcc-target-val').innerText = targetSlip > 800 ? "OPEN" : targetSlip + ' RPM';
+                
+                const actualSlipEl = document.getElementById('tcc-actual-val');
+                actualSlipEl.innerText = actualSlip + ' RPM';
+
+                // TCC Slip Color Logic: Turn orange if actual slip is fighting the PID loop by > 30 RPM
+                if (Math.abs(actualSlip - targetSlip) > 30 && targetSlip < 800) {
+                    actualSlipEl.style.color = 'var(--orange)'; 
+                } else {
+                    actualSlipEl.style.color = 'var(--emerald)';
+                }
+                
+                // Update Shift Metrics
+                document.getElementById('shift-time-val').innerText = data.shiftTime + ' ms';
+                document.getElementById('ratio-val').innerText = data.ratio.toFixed(2);
+                
+                const fb = document.getElementById('flare-box'), fv = document.getElementById('flare-val');
+                if(data.flare) { fb.style.background = 'rgba(251, 146, 60, 0.2)'; fb.style.borderColor = 'var(--orange)'; fv.style.color = 'var(--orange)'; fv.innerText = 'DETECTED'; }
+                else { fb.style.background = 'rgba(30, 41, 59, 0.4)'; fb.style.borderColor = 'transparent'; fv.style.color = 'var(--slate-400)'; fv.innerText = 'CLEAN'; }
+
+                const bb = document.getElementById('bind-box'), bv = document.getElementById('bind-val');
+                if(data.bind) { bb.style.background = 'rgba(251, 113, 133, 0.2)'; bb.style.borderColor = 'var(--rose)'; bv.style.color = 'var(--rose)'; bv.innerText = 'DETECTED'; }
+                else { bb.style.background = 'rgba(30, 41, 59, 0.4)'; bb.style.borderColor = 'transparent'; bv.style.color = 'var(--slate-400)'; bv.innerText = 'CLEAN'; }
+            } 
+            else if (data.type === "table_data") {
+                for(let i = 0; i < 256; i++) {
+                    inputs[i].value = data.data[i];
+                    colorCell(inputs[i]);
+                }
+            }
+        };
+
+        // ----------------------------------------------------
+        // API REQUESTS
+        // ----------------------------------------------------
+        function getTableSelection() {
+            const shiftVal = document.getElementById('tune-shift').value.split('_');
+            return {
+                shift: parseInt(shiftVal[0]),
+                dir: shiftVal[1], 
+                type: document.getElementById('tune-type').value
+            };
+        }
+
+        function requestTable() {
+            const req = getTableSelection();
+            ws.send(JSON.stringify({ cmd: "get_table", shift: req.shift, dir: req.dir, type: req.type }));
+        }
+
+        function flashTable() {
+            const req = getTableSelection();
+            const tableData = inputs.map(input => parseInt(input.value) || 0);
+            
+            ws.send(JSON.stringify({ cmd: "set_table", shift: req.shift, dir: req.dir, type: req.type, data: tableData }));
+            
+            const btn = event.target;
+            btn.innerText = "Flashed!";
+            btn.style.background = "var(--emerald)";
+            setTimeout(() => { btn.innerText = "Flash to Hardware"; btn.style.background = "var(--cyan)"; }, 2000);
+        }
+    </script>
+</body>
+</html>
