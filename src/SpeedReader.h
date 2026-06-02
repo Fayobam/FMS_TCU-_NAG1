@@ -1,15 +1,18 @@
+// ============================================================================
+// FILE: SpeedReader.h
+// VERSION: 2.1
+// UPDATES: Restored ESP32 Hardware PCNT (Pulse Counter) + Kinematic Math.
+// ============================================================================
 #pragma once
 #include <Arduino.h>
-#include <driver/pulse_cnt.h> // ESP32 Modern Hardware Pulse Counter
+#include "driver/pulse_cnt.h" // NEW: Updated ESP-IDF 5.x Pulse Counter library
+#include "TCU_Data.h"
 
-// ----------------------------------------------------------------------------
-// TONE RING CONFIGURATION (Adjust these to match your actual hardware!)
-// ----------------------------------------------------------------------------
-// How many teeth/pulses equal exactly 1 revolution?
-const float TEETH_N2  = 30.0f; // Example: 30-tooth trigger wheel for N2
-const float TEETH_N3  = 30.0f; // Example: 30-tooth trigger wheel for N3
-const float TEETH_OUT = 24.0f; // Custom external driveshaft reluctor
-const float TEETH_ENG = 2.0f;  // Example: 4-cyl Tach signal (2 pulses per rev)
+// --- SENSOR CALIBRATION CONSTANTS ---
+const float TEETH_N2 = 60.0f;          // OEM 722.6 Internal N2 Drum
+const float TEETH_N3 = 60.0f;          // OEM 722.6 Internal N3 Drum
+const float TEETH_OUT = 24.0f;         // Custom External Output Shaft Sensor
+const float PULSES_PER_REV_ENG = 3.0f; // Engine Tach Signal (e.g., 3 for V6, 2 for I4)
 
 class SpeedReader {
   private:
@@ -18,26 +21,26 @@ class SpeedReader {
     uint8_t _pin_out;
     uint8_t _pin_eng;
 
-    // Handles for the new ESP-IDF v5 PCNT driver
-    pcnt_unit_handle_t _unit_n2;
-    pcnt_unit_handle_t _unit_n3;
-    pcnt_unit_handle_t _unit_out;
-    pcnt_unit_handle_t _unit_eng;
+    // NEW: Handles for the updated PCNT driver
+    pcnt_unit_handle_t _pcnt_n2 = NULL;
+    pcnt_unit_handle_t _pcnt_n3 = NULL;
+    pcnt_unit_handle_t _pcnt_out = NULL;
+    pcnt_unit_handle_t _pcnt_eng = NULL;
 
-    // We need to track the exact time of our last reading to calculate RPM
     unsigned long _last_read_time;
 
-    // Helper function to setup the hardware PCNT for a specific pin
-    pcnt_unit_handle_t configurePCNT(uint8_t pin);
+    // Internal Raw RPMs
+    float _raw_n2_rpm;
+    float _raw_n3_rpm;
 
-    // Helper function to read the hardware counter and reset it
-    float calculateRPM(pcnt_unit_handle_t unit, float teeth, unsigned long time_delta_ms);
+    // Helper functions
+    void initPCNT(pcnt_unit_handle_t* unit_handle, uint8_t pin);
+    float calculateTurbineRPM(float n2_rpm, float n3_rpm, uint8_t current_gear);
 
   public:
     SpeedReader(uint8_t pin_n2, uint8_t pin_n3, uint8_t pin_out, uint8_t pin_eng);
-
     void begin();
     
-    // Call this periodically (e.g., every 50ms) to update the global telemetry struct
-    void update();
+    // Pass the current gear into the update loop for N2/N3 math
+    void update(uint8_t current_gear); 
 };

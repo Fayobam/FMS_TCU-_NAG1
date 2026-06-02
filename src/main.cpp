@@ -1,11 +1,11 @@
 // ============================================================================
 // FILE: main.cpp
-// VERSION: 7.1
-// UPDATES: Restored FreeRTOS dual-core architecture and SpeedReader integration.
+// VERSION: 8.0
+// UPDATES: InputManager now receives TPS + MAP pins. Otherwise unchanged
+//          dual-core FreeRTOS architecture.
 // ============================================================================
 #include <Arduino.h>
 
-// --- Our Custom Headers ---
 #include "TCU_Data.h"
 #include "SolenoidDriver.h"
 #include "SpeedReader.h"
@@ -14,107 +14,86 @@
 #include "ShiftScheduler.h"
 #include "WebManager.h"
 
-// REMOVED the conflicting #define PIN_TEMP_SENSOR 34 here!
-
 // ============================================================================
-// 1. GLOBAL OBJECT INSTANTIATION
+// 1. GLOBAL OBJECTS
 // ============================================================================
-// Create the global telemetry struct
 TCU_Telemetry telemetry;
 
-// Instantiate the Hardware Modules
 SolenoidDriver solenoids(PIN_MPC, PIN_SPC, PIN_TCC, PIN_Y3, PIN_Y4, PIN_Y5);
 SpeedReader speedReader(PIN_N2_SPEED, PIN_N3_SPEED, PIN_OUT_SPEED, PIN_ENG_SPEED);
-
-// FIX: Pass the correct temperature pin from TCU_Data.h!
-InputManager inputManager(PIN_ATF_TEMP); 
-
+InputManager inputManager(PIN_ATF_TEMP, PIN_TPS, PIN_MAP);   // <-- now gets load pins
 AdaptiveMemory adaptives;
 WebManager webManager;
-
-// The Scheduler requires pointers to BOTH the Solenoids and the Adaptive Memory
 ShiftScheduler shiftScheduler(&solenoids, &adaptives);
 
 // ============================================================================
-// 2. FREERTOS TASK PROTOTYPES
+// 2. TASK PROTOTYPES
 // ============================================================================
 void core1PhysicsTask(void *pvParameters);
 void core0DashboardTask(void *pvParameters);
 
 // ============================================================================
-// 3. SETUP (Runs exactly once at boot)
+// 3. SETUP
 // ============================================================================
 void setup() {
     Serial.begin(115200);
-    Serial.println("Booting 722.6 Standalone TCU (W5A330 / M111 Supercharged)...");
+    Serial.println("Booting FMS 722.6 TCU V9 (W5A330 / M111.985 + TVS1320)...");
 
-    // Initialize all modules
-    solenoids.begin();      
-    speedReader.begin();    
-    inputManager.begin();   
-    adaptives.begin();      
-    shiftScheduler.begin(); 
-    
-    // Initialize the Web Server and Access Point
+    solenoids.begin();
+    speedReader.begin();
+    inputManager.begin();
+    adaptives.begin();
+    shiftScheduler.begin();
+
     webManager.setAdaptiveMemory(&adaptives);
-    webManager.begin(); 
+    webManager.begin();
 
-    // Launch FreeRTOS Tasks
     xTaskCreatePinnedToCore(core1PhysicsTask, "PhysicsTask", 8192, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(core0DashboardTask, "DashboardTask", 8192, NULL, 1, NULL, 0);
 }
 
 void loop() {
-    vTaskDelete(NULL); // Free up the loop task since FreeRTOS handles everything
+    vTaskDelete(NULL);
 }
 
 // ============================================================================
-// 5. THE PHYSICS LOOP (Core 1) - 1000Hz (1ms)
+// 4. PHYSICS LOOP (Core 1) - 1000Hz
 // ============================================================================
 void core1PhysicsTask(void *pvParameters) {
-    const TickType_t xFrequency = 1; 
+    const TickType_t xFrequency = 1;
     TickType_t xLastWakeTime = xTaskGetTickCount();
-
     uint8_t speed_update_counter = 0;
 
     while (true) {
-        // 1. Read Inputs
-        inputManager.update();              // Reads Digital PRND pins
-        inputManager.updateAnalogSensors(); // NEW: Reads Analog Temp/Multiplex pin
-        
+        inputManager.update();              // PRND + paddles + TPS + MAP
+        inputManager.updateAnalogSensors(); // temp + raw P/N
+
         speed_update_counter++;
         if (speed_update_counter >= 50) {
-            speedReader.update();
-            speed_update_counter = 0; 
+            speedReader.update(telemetry.current_gear);
+            speed_update_counter = 0;
         }
 
-        // 2. Run Main Shift Logic
         shiftScheduler.update();
 
-        // 3. Keep the Y4 valve active in Park/Neutral for smooth engagements
+        // Garage jiggle stays tied to actual selector position
         if (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N') {
-            solenoids.startGarageShiftJiggle(); 
+            solenoids.startGarageShiftJiggle();
         } else {
             solenoids.stopGarageShiftJiggle();
         }
 
-        // 4. Command Hardware
         solenoids.update();
-
-        // 5. Sleep exactly until the next 1ms tick
-        vTaskDelayUntil(&xLastWakeTime, xFrequency); 
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
 
 // ============================================================================
-// 6. THE DASHBOARD LOOP (Core 0) - 100Hz (10ms)
+// 5. DASHBOARD LOOP (Core 0) - 100Hz
 // ============================================================================
 void core0DashboardTask(void *pvParameters) {
     while (true) {
-        // This broadcasts the data to your phone's browser via WebSockets
         webManager.broadcastTelemetry();
-        
-        // Yield CPU to the ESP32's internal WiFi radio
-        vTaskDelay(pdMS_TO_TICKS(10)); 
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

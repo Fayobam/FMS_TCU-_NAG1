@@ -1,12 +1,10 @@
 // ============================================================================
 // FILE: WebManager.cpp
-// VERSION: 6.1
-// UPDATES: Added TCC (Torque Converter Clutch) telemetry variables to JSON payload.
+// VERSION: 7.0
+// UPDATES: Added "limp_reset" command + safety/load fields to telemetry JSON.
 // ============================================================================
 #include "WebManager.h"
 
-// ... (Initialization & Broadcast remains exactly the same as V4.0) ...
-// Below is the updated JSON handling function for V5.0
 WebManager::WebManager() : server(80), ws("/ws") {
     _last_broadcast_time = 0;
     _adaptives = nullptr;
@@ -18,8 +16,8 @@ void WebManager::begin() {
     if (!SPIFFS.begin(true)) return;
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_AP);
-    WiFi.softAP("FMS_TCU", "shiftfast"); 
-    
+    WiFi.softAP("FMS_TCU", "shiftfast");
+
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
         if (SPIFFS.exists("/index.html")) request->send(SPIFFS, "/index.html", "text/html");
         else request->send(200, "text/plain", "FMS TCU Server is LIVE, but index.html is MISSING!");
@@ -39,16 +37,24 @@ void WebManager::begin() {
 }
 
 void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
-    if (_adaptives == nullptr) return;
-
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, (char*)data);
     if (error) return;
 
     String cmd = doc["cmd"];
-    uint8_t shift_idx = doc["shift"]; 
-    String type = doc["type"]; // "p" or "f" (pressure or timing)
-    bool is_up = (doc["dir"] == "up"); // NEW: Determine direction
+
+    // --- Safety: allow the dashboard to request a limp-mode reset ---
+    if (cmd == "limp_reset") {
+        telemetry.limp_reset_request = true;   // honoured only when stopped & in P/N
+        Serial.println("Limp reset requested via web.");
+        return;
+    }
+
+    if (_adaptives == nullptr) return;
+
+    uint8_t shift_idx = doc["shift"];
+    String type = doc["type"];        // "p" or "f"
+    bool is_up = (doc["dir"] == "up");
 
     if (cmd == "get_table") {
         int8_t* table = _adaptives->getTablePtr(is_up, shift_idx, (type == "p"));
@@ -56,15 +62,13 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         responseDoc["type"] = "table_data";
         JsonArray arr = responseDoc["data"].to<JsonArray>();
         for (int i = 0; i < 256; i++) arr.add(table[i]);
-
         char buffer[2048];
         size_t resLen = serializeJson(responseDoc, buffer);
         ws.textAll(buffer, resLen);
-    } 
+    }
     else if (cmd == "set_table") {
         int8_t* table = _adaptives->getTablePtr(is_up, shift_idx, (type == "p"));
         JsonArray arr = doc["data"].as<JsonArray>();
-        
         for (int i = 0; i < 256; i++) table[i] = (int8_t)arr[i].as<int>();
         _adaptives->saveTable(is_up, shift_idx, (type == "p"));
         Serial.println("Flash Memory Updated via Web Tuner!");
@@ -94,12 +98,17 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["flare"]     = telemetry.flare_detected;
     doc["bind"]      = telemetry.bind_detected;
 
-    // --- NEW: TCC TELEMETRY ---
     doc["tccPwm"]    = telemetry.tcc_lockup_pct;
     doc["tccTarget"] = telemetry.tcc_target_slip_rpm;
     doc["tccActual"] = telemetry.tcc_actual_slip_rpm;
 
-    char buffer[512];
+    // --- NEW: safety + limp status ---
+    doc["limp"]      = telemetry.is_limp_mode;
+    doc["limpReason"]= telemetry.limp_mode_reason;
+    doc["safety"]    = telemetry.last_safety_event;
+    doc["atfTemp"]   = telemetry.atf_temp_c;
+
+    char buffer[640];
     size_t len = serializeJson(doc, buffer);
     ws.textAll(buffer, len);
 }
