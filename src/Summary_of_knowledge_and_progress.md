@@ -1,8 +1,14 @@
 # FMS TCU — Master Engineering & Firmware Manual
-**Version:** 3.0  
-**Application:** Mercedes-Benz 722.6 (W5A330 Small NAG)  
-**Powertrain:** M111 2.3L + TVS1320 Supercharger  
-**Status:** Bench-ready. Road test pending sensor calibration verification.
+**Document Version:** 4.0
+**Firmware Version:** V12.1 (git `f50b8b4`, branch `main`)
+**Application:** Mercedes-Benz 722.6 (W5A330 Small NAG)
+**Powertrain:** M111 2.3L + TVS1320 Supercharger (≈1.2 bar)
+**Status:** Bench-ready. Road test pending sensor calibration + hardware-assumption validation (see §16).
+
+> **For external reviewers:** §16 (“Handoff Notes & Open Questions”) is written specifically
+> for a second AI/engineer to scrutinise. It lists every load-bearing assumption, the known
+> concurrency concerns, and the residual limitations. Start there if you are auditing, then
+> use §1–§15 as the reference for *what the code currently does*.
 
 ---
 
@@ -10,10 +16,27 @@
 
 Dual-core ESP32 DevKit V1 (240 MHz):
 
-- **Core 1 — Physics Engine (1000 Hz):** Solenoid PWM, shift state machine, speed sensors, planetary kinematics, safety layers, TPS ROC tracking.
-- **Core 0 — Web Studio (100 Hz):** Async WebSocket server; streams live telemetry JSON, receives adaptive table updates from dashboard.
+- **Core 1 — Physics Engine (1000 Hz):** Solenoid PWM, shift state machine, speed sensors, planetary kinematics, safety layers, TPS-ROC tracking. Owns **all** writes to the shared telemetry struct.
+- **Core 0 — Web Studio (100 Hz):** Async WebSocket server; streams live telemetry JSON, receives adaptive-table edits, and performs the **deferred NVS flash writes** offloaded from Core 1 (see §11).
 
-The two cores share a single `TCU_Telemetry` struct. Core 1 owns all writes; Core 0 reads only.
+The two cores share a single global `TCU_Telemetry telemetry` struct. Core 1 writes, Core 0 reads — **with two unsynchronised exceptions flagged in §16.2.**
+
+### Update-loop priority order (Core 1, every 1 ms)
+
+The order is deliberate — higher items can seize the outputs and `return` before lower items run:
+
+```
+1.  checkReverseInhibit()      // HIGHEST — R-while-moving failsafe + RP_LOCK solenoid
+2.  limp-mode enforcement      // forced 2nd, max line pressure, recovery gate
+3.  checkTpsROC()              // supercharger torque anticipation
+4.  calculateLiveRatio()
+5.  mid-shift ABORT            // selector knocked out of forward range
+6.  calculateLinePressure()
+7.  checkLimpMode()            // slip detection (engagement-grace gated)
+8.  checkSafetyShifts()        // overrev / lug auto-shifts
+9.  phase state machine        // PREFILL/OVERLAP/INERTIA or DS_RELEASE/SYNC/CATCH
+10. updateTCC()
+```
 
 ---
 
@@ -21,54 +44,46 @@ The two cores share a single `TCU_Telemetry` struct. Core 1 owns all writes; Cor
 
 ### Speed Sensors (PCNT Hardware)
 
-All four sensors use the ESP32 `pulse_cnt.h` hardware peripheral — zero missed pulses at 7000+ RPM.
+All four use the ESP32 `pulse_cnt.h` hardware peripheral — zero missed pulses at 7000+ RPM.
 
 | Signal | Pin | Teeth | Notes |
 |---|---|---|---|
 | N2 (internal) | 34 | 60 | K1 clutch drum |
 | N3 (internal) | 35 | 60 | K2 clutch drum |
 | Output shaft | 32 | 24 | Custom external reluctor |
-| Engine RPM | 33 | 60 | M111 crank reluctor wheel (60-tooth) |
+| Engine RPM | 23 | 60 | M111 crank reluctor (moved off GPIO 33 to free ADC1 for MAP) |
 
-**Confirmed by cross-reference with Thomas's dueATC (6 teeth × ÷10 PCB divider = 60 physical) and NAG52.**
+Cross-referenced with Thomas’s dueATC (6 teeth × ÷10 PCB divider = 60 effective) and NAG52.
 
 ### ATF Temperature / P/N Switch Multiplex
 
 Single wire, two signals on `PIN_ATF_TEMP` (pin 39):
 
 - **Voltage > 3.0 V** → P/N switch open → `pn_switch_raw = true`
-- **Voltage ≤ 3.0 V** → switch closed, running through PTC thermistor → temperature calculated from resistance
+- **Voltage ≤ 3.0 V** → through PTC thermistor → temperature from resistance
 
-Temperature formula: `temp_c = (resistance_ohms - 800) / 10` — simple linear approximation, clamped −20 to 150°C.
+`temp_c = (resistance_ohms − 800) / 10`, clamped −20…150 °C.
 
 ### TPS / MAP
 
-Both on ADC1 pins only — WiFi disables ADC2 entirely.  
-Both filtered with EMA α=0.2 at 1kHz (τ ≈ 5ms).
+Both on **ADC1** pins (36 / 33) — ADC2 is unusable while WiFi AP is up. EMA α = 0.2 at 1 kHz (τ ≈ 5 ms).
 
 ---
 
 ## 3. Planetary Kinematics — CONFIRMED FORMULA
 
-**The 722.6 has no physical input shaft sensor.** Turbine RPM is derived from N2 and N3.
-
-### Authoritative Formula (NAG52 `RATIO_2_1`)
+The 722.6 has no physical input-shaft sensor. Turbine RPM is derived from N2 and N3.
 
 ```
-turbine_rpm = (N2 × K) − (N3 × (K − 1))     K = 1.61  (N2_N3_BLEND_K in TCU_Data.h)
+turbine_rpm = (N2 × K) − (N3 × (K − 1))     K = 1.61  (N2_N3_BLEND_K)
 ```
 
-**Verification:**
-- N3 = 0 (gears 1 & 5 — N3 drum parked): collapses to `N2 × 1.61` ✓  
-- N2 = N3 (gear 3 — K1+K2 lock both drums to shaft): collapses to `N2 × 1.0` ✓
+- N3 = 0 (gears 1 & 5, N3 drum parked) → `N2 × 1.61` ✓
+- N2 = N3 (gear 3, both drums locked) → `N2 × 1.0` ✓
 
-**Single formula, all gears, no gear-position dependency.**  
-K = 1.61 is a calibration constant (same for Small NAG and Big NAG — shared front planetary).  
-Adjust `N2_N3_BLEND_K` on bench if turbine RPM ≠ engine RPM with TCC locked.
+Single formula, all gears, no gear-position branch. K is shared across Small/Big NAG (common front planetary). **Bench-verify:** with TCC locked, turbine should equal engine RPM ± 20.
 
-**What was wrong before:** The formula was written as `(N3 × 1.48) − (N2 × 0.48)` — N2 and N3 swapped. In 1st gear (N3 ≈ 0) this gave a negative turbine RPM, clamped to zero, so the limp mode detector saw a 300+ RPM mismatch on every startup.
-
-The gear 5 constant `N2 × 0.83` was also wrong — `0.83` is the gear ratio, not the sensor constant.
+**Prior bug:** formula had N2/N3 swapped (`(N3×1.48) − (N2×0.48)`) → negative turbine in 1st → clamped to 0 → false limp on every startup. Also the 5th-gear constant `0.83` was the *gear ratio*, not the sensor constant.
 
 ---
 
@@ -76,70 +91,55 @@ The gear 5 constant `N2 × 0.83` was also wrong — `0.83` is the gear ratio, no
 
 ### W5A330 Small NAG (THIS BUILD)
 
-| Gear | Ratio |
-|---|---|
-| 1st | 3.932 |
-| 2nd | 2.408 |
-| 3rd | 1.486 |
-| 4th | 1.000 |
-| 5th | 0.830 |
-| Rev | 3.100 |
+| Gear | Ratio | | Gear | Ratio |
+|---|---|---|---|---|
+| 1st | 3.932 | | 4th | 1.000 |
+| 2nd | 2.408 | | 5th | 0.830 |
+| 3rd | 1.486 | | Rev | 3.100 |
 
-### W5A580 Big NAG (for reference — swap in TCU_Data.h if needed)
+### W5A580 Big NAG (reference — commented block in TCU_Data.h)
 
-| Gear | Ratio |
-|---|---|
-| 1st | 3.595 |
-| 2nd | 2.186 |
-| 3rd | 1.405 |
-| 4th | 1.000 |
-| 5th | 0.831 |
-
-**If swapping to Big NAG:** also increase prefill timing defaults (K2 needs ~220ms vs 160ms) due to larger clutch volume. `N2_N3_BLEND_K = 1.61` stays the same.
+1st 3.595 · 2nd 2.186 · 3rd 1.405 · 4th 1.000 · 5th 0.831. If swapping: also raise K2 prefill (~220 ms vs 160 ms) for the larger clutch volume; `K = 1.61` unchanged.
 
 ---
 
 ## 5. Solenoid Routing — CONFIRMED CORRECT
 
-Cross-referenced against Thomas's dueATC (`SOL_12_45 / SOL_23 / SOL_34`):
+Cross-referenced against dueATC (`SOL_12_45 / SOL_23 / SOL_34`):
 
 | Solenoid | Pin | Handles |
 |---|---|---|
 | Y3 | 14 | 1↑2, 4↑5, 5↓4, 2↓1 |
 | Y5 | 19 | 2↑3, 3↓2 |
 | Y4 | 18 | 3↑4, 4↓3 |
+| TCC | 27 | Converter lock-up |
+| MPC | 26 | Line/holding pressure (inverted) |
+| SPC | 25 | Shift pressure (inverted) |
+| **RP_LOCK** | **13** | **Reverse/Park interlock solenoid (digital, new in V12)** |
 
 ### Kick-and-Hold Driver
 
-4-ohm coils burn up at continuous 12V. The firmware blasts **83% PWM for 60ms** (snap open), then drops to **33% PWM** (hold without overheating). Simple `digitalWrite`-equivalent solenoids — hydraulically on or off.
+4-ohm coils overheat at continuous 12 V. Firmware: **83 % PWM for 60 ms** (snap open) → **33 % PWM** hold. Shift solenoids behave as on/off hydraulic switches.
 
 ### Pressure Solenoids (Inverted Logic)
 
-`0% commanded = 255 PWM duty = maximum hydraulic pressure`  
-`100% commanded = 0 PWM duty = zero hydraulic pressure`
-
-MPC (pin 26): line/holding pressure. SPC (pin 25): shift pressure. TCC (pin 27): normal logic.
+`0 % commanded = 255 duty = MAX pressure`; `100 % commanded = 0 duty = MIN pressure`.
+The driver API (`setLinePressure`/`setShiftPressure`) takes an **actual-pressure %** and inverts internally, so `setLinePressure(100)` = maximum clamp. TCC is normal logic.
 
 ---
 
 ## 6. Drive Engagement Sequence
 
-### In P/N
+**In P/N:** Y4 continuously pulsed at 37 % (garage jiggle) to buffer the 3-4 valve body.
 
-Y4 continuously pulsed at **37% PWM** (garage shift jiggle) — buffers the 3-4 valve body so Drive engagement is smooth.
+**Shifting to D:** garage logic fires on the **falling edge of `pn_switch_raw`** (manual valve leaving P/N), independent of the 4-bit PRND decoder settling.
 
-### Shifting to D
-
-The garage shift fires on the **falling edge of `pn_switch_raw`** — the instant the physical P/N switch opens as the manual valve moves. This is independent of the 4-bit PRND decoder settling.
-
-**The 722.6 hydraulic default is 2nd gear.** The firmware acknowledges this reality:
+The 722.6 hydraulic default is **2nd gear**, and the firmware acknowledges it:
 - `current_gear = 2`, `target_gear = 2` on engagement
-- Y3 is NOT fired — no automatic shift to 1st
-- The driver selects 1st via paddle-down if desired
+- Y3 is **not** fired (no auto-shift to 1st) — this is a manual-paddle box; the driver picks 1st via paddle-down
+- **NEW (V12):** an **engagement-sync grace window** (`ENGAGE_GRACE_MS = 1500`) is armed (see §12.3)
 
-This is correct for a manual-paddle transmission. Attempting to force 1st at standstill via the downshift pipeline has ratio-based exit conditions that don't function at zero output RPM.
-
-Returning to P/N: `drive_engaged` resets, Y4 jiggle resumes, edge detector re-arms.
+Returning to P/N: `drive_engaged` resets, jiggle resumes, edge detector re-arms.
 
 ---
 
@@ -147,184 +147,132 @@ Returning to P/N: `drive_engaged` resets, Y4 jiggle resumes, edge detector re-ar
 
 ### Upshift State Machine
 
-| Phase | SPC | Line (MPC) | Exit condition |
-|---|---|---|---|
-| PHASE_CRUISING | 0% | HOLDING_MAP | Paddle-up OR auto-safety |
-| PHASE_PREFILL | 80% (fill fast) | Elevated | `60 + timing_mod` ms elapsed |
-| PHASE_OVERLAP | 45% → ramp to 90% | Elevated | `live_ratio < current_ratio − 0.1` (clutch biting) |
-| PHASE_INERTIA | 90% → ramp to 100% | Elevated | `live_ratio ≤ target_ratio + 0.05` OR 600ms timeout |
-| PHASE_COMPLETION | 0% | HOLDING_MAP | 50ms settle → adaptive evaluate |
+| Phase | SPC | Exit condition |
+|---|---|---|
+| CRUISING | 0 % | Paddle-up OR auto-safety |
+| PREFILL | 80 % (fast fill) | `60 + timing_mod` ms elapsed |
+| OVERLAP | 45 % → ramp to 90 % | `live_ratio < current_ratio − 0.1` **OR 800 ms backstop** |
+| INERTIA | 90 % → ramp to 100 % | `live_ratio ≤ target_ratio + 0.05` OR 600 ms timeout |
+| COMPLETION | 0 % | 50 ms settle → adaptive evaluate |
+
+The **800 ms OVERLAP backstop (V12)** guarantees the machine can’t hang if the ratio signal is noisy/absent; it falls through to INERTIA, which has its own completion timeout.
 
 ### Downshift State Machine
 
 | Phase | SPC | Exit condition |
 |---|---|---|
-| PHASE_DS_RELEASE | 0% | `80 + timing_mod` ms — engine rev-match window |
-| PHASE_DS_SYNC | 0% | `live_ratio ≥ target_ratio − 0.05` OR 400ms timeout |
-| PHASE_DS_CATCH | Ramp to `90 + pressure_mod` | `live_ratio ≥ target_ratio − 0.05` OR 400ms timeout |
-| PHASE_COMPLETION | 0% | 50ms settle → adaptive evaluate |
+| DS_RELEASE | 0 % | `80 + timing_mod` ms (rev-match window) |
+| DS_SYNC | 0 % | `live_ratio ≥ target_ratio − 0.05` OR 400 ms |
+| DS_CATCH | ramp to `90 + pressure_mod` | `(live_ratio ≥ target_ratio − 0.02 AND ≥ 40 ms)` OR 300 ms |
+| COMPLETION | 0 % | 50 ms settle → adaptive evaluate |
 
-**Key fix:** DS_SYNC threshold was `target − 0.2` which was satisfied immediately on entry, skipping the entire rev-match wait. Fixed to `target − 0.05`.
+**Two fixes baked in:**
+- DS_SYNC threshold was `target − 0.2` (true immediately on entry → rev-match skipped). Now `target − 0.05`, requiring real ratio climb.
+- DS_CATCH formerly shared DS_SYNC’s exact exit → it completed on its first tick (single +2 % step, no real ramp). Now a **distinct, tighter** exit (`target − 0.02` AND minimum 40 ms) so the catch pressure ramp has genuine duration.
 
 ### Money-Shift Guard
 
-`predicted_rpm = output_rpm × target_gear_ratio`  
-If predicted > **6000 RPM** → downshift refused, regardless of source (paddle or auto-safety).
+`predicted_rpm = output_rpm × target_ratio`; if > **6000 RPM**, the downshift is refused regardless of source (paddle or auto-safety).
 
 ---
 
 ## 8. Hydraulic Pressure Strategy
 
-### Holding Pressure (HOLDING_PRESSURE_MAP)
+**Holding pressure (`HOLDING_PRESSURE_MAP[5][16]`):** performance-biased — floor 20–38 %, boost-zone bins (4–8) pushed hard. The blower makes real torque even at light throttle.
 
-Performance-biased for M111 + TVS1320. Floor raised to minimum 20–38%, boost-zone bins (4–8) pushed hard. The supercharger makes significant torque even at moderate throttle — even light-load bins carry real torque risk.
+**Line pressure during shifts:** `target = tps_pct + (map_kpa − 100)×2.0 + 20`, applied across all shift phases.
 
-### Line Pressure During Shifts
+**ATF temperature compensation (corrected — both extremes need MORE pressure):**
 
-```
-target = tps_pct + (map_kpa − 100) × 2.0 + 20
-```
-
-Applied across all shift phases to ensure adequate clamping during the transition.
-
-### ATF Temperature Compensation (CORRECTED)
-
-The old code incorrectly *reduced* pressure when cold. Cold ATF is thick and slow-filling; hot ATF leaks past seals. Both directions need MORE pressure, not less.
-
-| ATF temp | Multiplier | Reason |
-|---|---|---|
-| < 20°C | × 1.30 | Very viscous, slow fill |
-| 20–40°C | × 1.15 | Cold |
-| 40–80°C | × 1.00 | Normal operating range |
-| 80–110°C | × 1.05 | Minor seal leakage |
-| > 110°C | × 1.20 | Significant leakage |
+| ATF | × | ATF | × |
+|---|---|---|---|
+| < 20 °C | 1.30 | 80–110 °C | 1.05 |
+| 20–40 °C | 1.15 | > 110 °C | 1.20 |
+| 40–80 °C | 1.00 | | |
 
 ---
 
 ## 9. Supercharger-Specific Load Model
 
-### computeLoad()
+`load = (tps_pct × 1.25) + max(0, map_kpa − 100) × 0.8`
 
-```
-load = (tps_pct × 1.25) + max(0, map_kpa − 100) × 0.8
-```
-
-The `× 1.25` TPS weighting compensates for MAP sensor lag (~100–200ms manifold fill time). On the TVS1320, torque tracks throttle mechanically — the MAP reading lags the actual torque delivery. TPS is forward-weighted so the load index responds as fast as the throttle moves.
-
-At WOT + 1.2 bar boost: load ≈ 125 + 96 = 221 → constrained to bin 15 by `loadToBin()`.
+The ×1.25 TPS weighting front-runs MAP lag (~100–200 ms fill). On a TVS1320 torque tracks throttle mechanically, so TPS is the faster torque proxy. WOT + 1.2 bar ≈ 221 → bin 15 via `loadToBin()` (16 bins, ~12.5 load units each).
 
 ### TPS Rate-of-Change (ROC) Torque Anticipation
 
-The TVS1320 has no spool lag — torque arrives with throttle, not with MAP settling. A fast tip-in means torque is arriving NOW.
-
-**Trigger:** `dTPS/dt > 0.15 %/ms` (≈ full throttle in under 700ms)  
-**Effect:** Immediately → 100% line pressure + TCC forced open  
-**Hold:** While TPS > 40% OR ROC still positive  
-**Release:** TPS < 40% AND ROC < 0.02 %/ms → start 2-second cooldown  
-**Exit:** Cooldown expires → normal MAP/TPS-based control resumes
-
-The cooldown prevents pressure from dropping immediately after the tip-in while the clutches are still loaded.
-
-Dashboard indicator: **Torque Mode** (orange = ACTIVE) in the Adaptive Metrics panel.
-
-Calibration constants in `TCU_Data.h`:
-- `TPS_ROC_TRIGGER_PCT_MS = 0.15f`  
-- `TPS_ROC_RELEASE_HOLD = 40.0f`  
-- `TPS_ROC_COOLDOWN_MS = 2000`
+- **Trigger:** `dTPS/dt > 0.15 %/ms`
+- **Effect:** 100 % line pressure + TCC forced open immediately
+- **Hold:** while TPS > 40 % OR ROC positive
+- **Release:** TPS < 40 % AND ROC < 0.02 %/ms → 2 s cooldown → normal control
+- Dashboard: **Torque Mode** badge (orange = active)
 
 ---
 
-## 10. TCC (Torque Converter Clutch) Strategy
+## 10. TCC Strategy
 
 | Condition | Target slip | Behaviour |
 |---|---|---|
-| High-torque mode (ROC) | 500 RPM | Force open preemptively |
-| MAP > 105 kPa OR TPS > 45% | 500 RPM | Open for boost/demand |
-| RPM < 1400 OR gear 1 | 1000 RPM | Open to prevent stall |
-| Normal cruise | 50 RPM | PID lock-up control (max 85%) |
-| During any shift phase | 1000 RPM | Always open during shifts |
+| High-torque (ROC) | 500 | Force open preemptively |
+| MAP > 105 kPa OR TPS > 45 % | 500 | Open for boost/demand |
+| RPM < 1400 OR gear 1 | 1000 | Open to prevent stall |
+| Normal cruise | 50 | Integral lock-up (max 85 %) |
+| Any shift phase | 1000 | Always open during shifts |
 
-**TPS threshold reduced from 75% → 45%** because the supercharger makes peak torque from any throttle position above ~45%. At 75% the TCC would stay locked through the most dangerous part of a throttle transition.
+TPS open threshold lowered 75 → 45 % because the blower makes peak torque from any throttle above ~45 %.
 
 ---
 
 ## 11. Adaptive Memory System
 
-### Structure
-
-Four `int8_t` tables, each `[4 shifts][16 load bins][16 RPM bins]`:
-
-| Table | Key | Content |
-|---|---|---|
-| `P_TBL_x` | `pressure_modifiers` | Upshift overlap SPC % offset |
-| `F_TBL_x` | `prefill_modifiers` | Upshift fill time ms offset |
-| `DP_TBL_x` | `ds_pressure_modifiers` | Downshift catch SPC % offset |
-| `DT_TBL_x` | `ds_timing_modifiers` | Downshift rev-match window ms offset |
-
-Persisted to ESP32 NVS flash via `Preferences`. Loaded on boot; re-flashed after every learning event.
-
-### Clamp Ranges
+Four `int8_t[4][16][16]` tables (`pressure / prefill / ds_pressure / ds_timing`), persisted to NVS via `Preferences`. Loaded on boot; defaults injected only on blank flash.
 
 | Type | Min | Max | Rationale |
 |---|---|---|---|
-| Pressure modifiers | −30% | +60% | Tight range; small corrections only |
-| Timing modifiers | −30ms | +120ms | Wide range; K2 needs up to 180ms fill |
+| Pressure mods | −30 % | +60 % | Small corrections only |
+| Timing mods | −30 ms | +120 ms | K2 needs up to 180 ms fill |
 
-### Default Baselines (W5A330 / performance build)
+**Learning:** flare → `pressure += 2`; upshift bind → `pressure −= 2`; downshift bind → `timing += 5`. Small nudges; ~20–50 shifts per cell to converge.
 
-**Upshift prefill timing** (base 60ms + modifier):
+### NVS write offload (NEW — V11)
 
-| Shift | Modifier | Total | Clutch |
-|---|---|---|---|
-| 1→2 | +30ms | 90ms | B1 brake band (small volume) |
-| 2→3 | +50ms | 110ms | K1 clutch (medium volume) |
-| 3→4 | +100ms | 160ms | K2 clutch (large volume, flare-prone) |
-| 4→5 | +20ms | 80ms | B1 brake band |
+`evaluateShift()` used to call `preferences.putBytes()` **directly on the 1 kHz Core-1 loop** — an NVS write can block 1–10 ms and jitter shift timing. Now `evaluateShift()` only sets bits in a `volatile uint16_t _dirty_mask`; **`processDirtyTables()` runs on Core 0** (from `broadcastTelemetry`, 100 Hz) and flushes **one** table per call. Max flush latency for all 16 tables ≈ 160 ms — fine for adaptive learning. *(Concurrency caveat in §16.2.)*
 
-**Downshift rev-match timing** (base 80ms + modifier):
-
-| Shift | Modifier | Total |
-|---|---|---|
-| 2→1 | +20ms | 100ms |
-| 3→2 | +50ms | 130ms |
-| 4→3 | +100ms | 180ms |
-| 5→4 | +120ms | 200ms |
-
-**Pressure defaults:** `load_bin × 4` (0→60% across 16 bins). K2 upshift and 4↓3 / 5↓4 downshifts get +10% and +5% extra respectively.
-
-### Learning Logic
-
-- **Flare detected:** `pressure_mod += 2` (clutch slipped — more pressure needed)
-- **Bind detected (upshift):** `pressure_mod −= 2` (too harsh — less pressure)
-- **Bind detected (downshift):** `timing_mod += 5` (catch applied too early — more rev-match time)
-- Nudge amounts are small; convergence takes 20–50 shifts per operating cell.
-
-**Important:** New defaults only load on blank flash. If adaptive tables exist in NVS from a previous version, run **Erase Flash** in PlatformIO before first bench test to load the updated baselines.
+> **Bench note:** new defaults load **only on blank flash**. Run *Erase Flash* before first bench test, or stale tables from a prior version persist.
 
 ---
 
-## 12. Safety Systems
+## 12. Safety & Abuse-Case Systems
 
-### Auto-Safety Shifts
+### 12.1 Auto-Safety Shifts (both pass the money-shift guard)
 
-Both pass through the money-shift guard before executing.
+- **Overrev upshift:** engine > 6300 RPM → force upshift (unless 5th). Now gated on `isForwardRange()`, so it also fires in manual limit positions `'1'`/`'2'` — **engine protection overrides a manual gear cap** (V12.1).
+- **Lug downshift:** RPM < 1100 AND TPS > 25 AND **gear > 2** → force downshift. **Floor is 2nd** (V11): 1st stays the driver’s choice, and because D-engagement starts in 2nd this can never fire from a standstill. Sequential — one shift per 500 ms cooldown — so a driver who forgot to drop from 5th at a light gets 5→4→3→2.
+- **Cooldown:** 500 ms between auto-shifts.
 
-- **Overrev upshift:** engine RPM > 6300 → force upshift (unless already 5th gear)
-- **Lug downshift:** RPM < 1100 AND TPS > 25% AND gear > 1 → force downshift
-- **Cooldown:** 500ms between consecutive auto-safety shifts
+> A *predictive* lug check was tried and **removed** (V11): at a light in 5th, `output_rpm ≈ 0` made predicted RPM ≈ 0, which blocked the exact downshift the feature exists for. The 2nd-gear floor is the correct guard instead.
 
-### Limp Mode
+### 12.2 Limp Mode
 
-Monitors while cruising at moderate load (`tps < 80%, map < 130 kPa, output_rpm > 200`).  
-`mismatch = |turbine_rpm − (output_rpm × target_ratio)|`  
-If mismatch > 300 RPM sustained for 400ms → limp mode:
-- 100% line pressure
-- 0% shift pressure  
-- All routing solenoids off (hydraulic default = 2nd gear)
-- TCC off
-- Dashboard FATAL code
+Active while cruising at moderate load (`tps < 80, map < 130, output_rpm > 200`).
+`mismatch = |turbine − output×target_ratio|`; > 300 RPM sustained 400 ms → limp:
+- 100 % line, 0 % shift, all routing solenoids off (→ hydraulic 2nd), TCC off, dashboard FATAL.
+- **Reset:** web `limp_reset`, accepted only when `output_rpm < 50` AND in P/N.
 
-**Reset:** Web command `limp_reset` accepted only when `output_rpm < 50` AND in P/N.
+### 12.3 Selector-Abuse Protection (NEW — V12 / V12.1)
+
+Three real abuse cases found in the standalone walkthrough:
+
+**(a) N→D while moving — was: *instant limp*.** Root cause is the engagement-sync transient: engaging 2nd at road speed slips the clutch for several hundred ms while dragging the turbine to `output×2.408`. `checkLimpMode()` now suppresses slip detection while `millis() < _engage_grace_until_ms` (1500 ms, armed on every D engagement). After sync the box genuinely *is* in 2nd, so the ratio math matches and detection resumes. Residual: engaging 2nd at very high speed is mechanically harsh; above ~160 km/h it can momentarily touch overrev before the OVERREV net climbs out (inherent to “coast in N at speed, slam D”).
+
+**(b) Selector knocked to N/R/P mid-shift — was: *stuck solenoid + OVERLAP hang*.** The manual valve hydraulically releases the clutches, but firmware kept the routing solenoid energised and OVERLAP waited forever on a ratio change that could no longer happen. Now an **abort block** (`in_active_shift && !isForwardRange()`) stops all shift solenoids, drops SPC to 0, sets gear→2, returns to CRUISING. The 800 ms OVERLAP backstop (§7) is the second line of defence.
+
+**(c) R while moving forward — was: *no inhibit at all*.** Two layers:
+- **Layer 1 (preventive):** `RP_LOCK` solenoid (GPIO13) driven via `setShiftLock(moving)` every loop — physically blocks the lever from leaving the forward range while `output_rpm > 150` (~5 km/h). **Fail-safe:** released at boot/reset, so a dead ESP32 never traps the driver.
+- **Layer 2 (reactive failsafe):** if R is engaged above 150 RPM anyway, `checkReverseInhibit()` (top of loop, **above limp mode**) collapses line pressure to `REVERSE_ABUSE_LINE_PCT = 15 %` so the reverse brake B3 slips/heats instead of shock-loading the driveline; SPC 0, TCC 0, all shift solenoids off; `reverse_abuse_active` warns the dashboard (`revAbuse`). Auto-clears below 150 RPM.
+
+**Priority:** reverse failsafe runs **before** limp mode specifically so an already-limp car (which forces line pressure to 100 %) can’t slam B3 at max clamp when R is yanked while rolling (V12.1).
+
+Paddle requests are also ignored outside a forward range (`isForwardRange()` gate).
 
 ---
 
@@ -332,33 +280,94 @@ If mismatch > 300 RPM sustained for 400ms → limp mode:
 
 | Item | File | Status |
 |---|---|---|
-| `PIN_MAP = 33`, `PIN_ENG = 23` | TCU_Data.h | **HARDWARE REWIRE REQUIRED** — GPIO 23 has no ADC channel; MAP moved to GPIO 33 (ADC1_CH5), engine tach moved to GPIO 23 (PCNT only needs GPIO) |
-| `MAP_KPA_AT_0V`, `MAP_KPA_PER_VOLT` | TCU_Data.h | **Placeholder** — measure your sensor's transfer function |
-| `TPS_VOLTS_CLOSED`, `TPS_VOLTS_WOT` | InputManager.h | **Placeholder** — measure at pedal stops on the car |
-| `N2_N3_BLEND_K = 1.61` | TCU_Data.h | **Verify on bench** — with TCC locked, turbine should equal engine RPM ±20 RPM |
-| `RPM_OVERREV_UPSHIFT = 6300` | TCU_Data.h | **Sanity check** — appropriate for M111 + TVS1320 redline |
-| `RPM_LUG_THRESHOLD = 1100` | TCU_Data.h | **Sanity check** — confirm stall speed with blower |
-| Prefill timing defaults | AdaptiveMemory.cpp | Conservative starting point — adaptive will tune |
-| Pressure map values | ShiftScheduler.h | Performance-biased — adaptive will pull back if bind |
+| `PIN_MAP = 33`, `PIN_ENG = 23` | TCU_Data.h | **HARDWARE REWIRE** — GPIO 23 has no ADC; MAP→33 (ADC1_CH5), engine tach→23 (PCNT) |
+| `PIN_RP_LOCK = 13`, `RP_LOCK_ACTIVE_HIGH`, `ENABLE_RP_LOCK` | TCU_Data.h | **VERIFY shifter mechanism + polarity** before trusting Layer 1; set `ENABLE_RP_LOCK=false` if no lock fitted |
+| `MAP_KPA_AT_0V`, `MAP_KPA_PER_VOLT` | TCU_Data.h | **Placeholder** — measure sensor transfer function |
+| `TPS_VOLTS_CLOSED/WOT` | InputManager.h | **Placeholder** — measure at pedal stops |
+| `N2_N3_BLEND_K = 1.61` | TCU_Data.h | **Bench-verify** vs engine RPM, TCC locked |
+| `RPM_OVERREV_UPSHIFT = 6300`, `RPM_LUG_THRESHOLD = 1100` | TCU_Data.h | Sanity-check for M111 + blower |
+| `OUTPUT_RPM_MOVING / REVERSE_INHIBIT_SPEED_RPM = 150` | TCU_Data.h | Tune to your final-drive/tyre (≈5 km/h) |
+| `ENGAGE_GRACE_MS = 1500` | TCU_Data.h | Long enough for clutch sync at speed |
 
-### Bench Test Protocol (before any vehicle test)
+### Bench Test Protocol
 
-1. Erase flash → confirms new adaptive defaults load
-2. Signal generator on all 4 speed sensors → verify RPM math and turbine formula
-3. Signal generator through P→D transition → confirm P/N edge detection fires garage acknowledgement correctly (gear=2, no Y3 fire)
-4. Simulate fast TPS ramp → confirm Torque Mode indicator activates on dashboard
-5. Simulate 300+ RPM turbine mismatch sustained 400ms → confirm limp mode fires
-6. Test limp reset via dashboard while stationary and in P/N
-7. Verify overrev upshift fires at 6300 RPM simulated engine speed
-8. Monitor Serial for "WARNING: Telemetry JSON truncated" — should never appear
+1. **Erase flash** → confirm new adaptive defaults load.
+2. Signal-gen all 4 speed sensors → verify RPM math + turbine formula (§3).
+3. P→D transition → confirm garage edge fires (gear=2, **no Y3**).
+4. Fast TPS ramp → Torque Mode indicator activates.
+5. Sustained 300+ RPM turbine mismatch 400 ms → limp fires; reset via dashboard in P/N.
+6. Overrev upshift at 6300 simulated.
+7. **N→D with output spinning** → confirm **no** false limp (grace).
+8. **Selector→N mid-shift** → confirm solenoid drops, no hang.
+9. **R with output spinning** → confirm RP_LOCK asserts + line pressure dumps + `revAbuse`.
+10. Watch Serial for “Telemetry JSON truncated” — should never appear.
 
 ---
 
 ## 14. Web Dashboard
 
-- **WiFi AP:** `FMS_TCU` / `shiftfast`
-- **Address:** `http://192.168.4.1`
-- **Telemetry:** 100Hz WebSocket JSON stream
-- **Calibration Studio:** Fetch/flash any of the 8 adaptive tables (4 upshift × 4 downshift, pressure or timing) as a live 16×16 heatmap grid
+- **AP:** `FMS_TCU` / `shiftfast` → `http://192.168.4.1`
+- 100 Hz WebSocket JSON. Calibration Studio: fetch/flash any of the 8 tables as a live 16×16 heatmap.
+- **Shift View** tab: rolling 6 s canvas chart (pressures / ratio / RPM) with phase colour bands and gear markers.
+- New telemetry fields: `phase`, `htMode`, `revAbuse`.
+- **Update index.html:** PlatformIO → *Upload Filesystem Image* (separate from firmware). Close Serial Monitor first.
 
-**To update index.html:** PlatformIO → Upload Filesystem Image (separate from firmware flash). Always close Serial Monitor first.
+---
+
+## 15. Change Log (recent)
+
+| Ver | Highlights |
+|---|---|
+| V9 | NAG52 turbine formula fix; TPS/MAP inputs; P/N latch split |
+| V10 | Performance pressure tuning; MAP pin→33; DS_CATCH/DS_SYNC distinct exits; flare-ratio + stopwatch fixes; Shift View tab |
+| V11 | Lug floor at 2nd (predictive check removed); **NVS write deferred to Core 0** |
+| V12 | Engagement-sync grace; mid-shift abort + OVERLAP backstop; **RP_LOCK interlock** + reverse-at-speed failsafe; paddle forward-range gate |
+| V12.1 | Reverse failsafe outranks limp; overrev covers manual `'1'`/`'2'` |
+
+---
+
+## 16. Handoff Notes & Open Questions (FOR EXTERNAL REVIEW)
+
+This section is the audit surface. Everything below is either an **assumption that could be wrong**, a **known concurrency concern**, or a **residual limitation**. A reviewer’s time is best spent here.
+
+### 16.1 Load-bearing assumptions that need expert/hardware validation
+
+1. **Pulse-latch gear-hold model (BIGGEST ASSUMPTION).** The firmware fires a shift solenoid momentarily to *initiate* a shift, then **releases it** in COMPLETION, assuming the valve body hydraulically **latches** the new gear. If the real 722.6 instead holds gears via a **continuous solenoid energisation pattern**, this architecture is fundamentally wrong (gears would drop back to the hydraulic default the moment the solenoid releases). *Question for reviewer: is momentary-pulse-then-latch correct for the 722.6 valve body, or must shift solenoids be held per-gear?*
+
+2. **Hydraulic default = 2nd gear, achieved by all shift solenoids OFF.** Limp mode and every abort rely on this. *Verify the 722.6 with all three shift solenoids de-energised actually sits in 2nd (some sources say the limp/default behaviour is 2nd or 5th depending on valve body / failure mode).*
+
+3. **Solenoid routing map** (Y3=1-2/4-5, Y5=2-3, Y4=3-4). Cross-checked against dueATC but not on this physical valve body.
+
+4. **N2/N3 blend K = 1.61.** Taken from NAG52; bench-verify against engine RPM with TCC locked.
+
+5. **RP_LOCK (GPIO13) existence, mechanism, and polarity.** We *assume* an energise-to-lock interlock that blocks lever travel out of the forward range. The actual shifter may have only a park-shift-lock (energise-to-*release*), or none. Currently `ENABLE_RP_LOCK = true`, `RP_LOCK_ACTIVE_HIGH = true`. **Layer 2 (pressure dump) protects regardless**, so a wrong Layer-1 assumption is not catastrophic, but verify before relying on the lever block.
+
+6. **MAP rewire to GPIO 33 / engine tach to GPIO 23.** Pure ADC2-vs-WiFi hardware constraint. Without the rewire, MAP reads garbage and all boost compensation is dead.
+
+### 16.2 Concurrency concerns (genuine — please scrutinise)
+
+1. **`String` telemetry fields read across cores without a lock.** `last_safety_event` and `limp_mode_reason` are Arduino `String` (heap-backed). **Core 1 writes them; Core 0 reads them in `buildAndSendTelemetryJSON()`** with no mutex. Concurrent access to a `String` mid-reallocation can corrupt the heap / crash. *This is the most likely real defect in the codebase.* Options: replace with fixed `char[N]` buffers, double-buffer, or guard with a `portMUX`. **Recommend fixing before road test.**
+
+2. **`_dirty_mask` RMW is not atomic.** Core 1 does `_dirty_mask |= bit` (now written as a load/store pair); Core 0 does `_dirty_mask &= ~bit`. A truly concurrent read-modify-write could drop a set or clear. Probability is low (writes are per-shift, clears at 100 Hz) and the only consequence is a delayed/missed NVS flush of one table, but it is not provably correct. Consider `std::atomic<uint16_t>` or a critical section.
+
+3. **Scalar telemetry (float/uint8) cross-core reads** are unsynchronised but 32-bit aligned word access is atomic on Xtensa, so individual fields are fine. The risk is only *tearing across multiple related fields* read at slightly different instants (e.g. ratio vs gear) — cosmetic on the dashboard, not used for control on Core 0.
+
+### 16.3 Residual functional limitations (accepted, not bugs)
+
+| Item | Detail | Severity |
+|---|---|---|
+| Reverse holding pressure | R borrows the 2nd-gear `HOLDING_PRESSURE_MAP` row (gear label = 2). ~22 % line at idle may be soft for a boosted reverse launch. No dedicated reverse clamp target. | Low |
+| Reverse re-engage speed | Layer-2 failsafe releases at 150 RPM (~5 km/h); B3 then fully applies while still creeping. Survivable, not silky. Tunable. | Low |
+| N→D at extreme speed | Engages 2nd (harsh); OVERREV net climbs out. No speed-matched gear pre-selection (the pulse-latch model can’t statically hold an arbitrary gear without running the shift sequence). | Low |
+| Open-loop load | No input-shaft torque sensor; load is inferred from TPS/MAP only. Adaptive learning is the only closed-loop correction. | Medium |
+| Adaptive convergence | ±2 nudges with single flare/bind flags per shift — assumed to converge, not formally proven stable; could hunt in a noisy cell. | Medium |
+| Flare/bind thresholds | Flare = ratio rise > 0.15; bind = output drop > 30 RPM. Plausible but unvalidated on a real shift trace. | Medium |
+
+### 16.4 Suggested review questions to pose to the external model
+
+- Is the **pulse-latch hold model** valid for the 722.6, or must shift solenoids be held continuously per gear? (§16.1.1 — highest impact.)
+- Does the **`String` cross-core access** (§16.2.1) pose a real crash risk here, and what is the lightest correct fix?
+- Are the **DS_SYNC / DS_CATCH ratio thresholds and timeouts** physically sensible for the W5A330, or will they cut shifts short / drag them out?
+- Is **collapsing line pressure** the right reaction to R-at-speed, or does it risk a different failure (e.g. losing forward clutch control if the lever is mid-travel)?
+- Is **1500 ms** an adequate engagement-sync grace at the worst-case N→D speed delta, without masking a genuine clutch failure for too long?
+- Does the **performance-biased pressure map** risk clutch shock that could, over time, damage the planetary or the output thrust bearing?
