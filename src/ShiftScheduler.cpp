@@ -189,18 +189,13 @@ void ShiftScheduler::checkSafetyShifts() {
         return;
     }
 
-    // --- LUG: force a downshift if loaded and below safe RPM ---
+    // --- LUG: sequential downshift back toward 2nd (one shift per cooldown) ---
+    // Classic case: driver forgot to downshift from 5th at a traffic light.
+    // Floor is 2nd — the hydraulic default — so 1st remains driver's choice.
+    // The floor also means this never fires after a D-engagement (which starts in 2nd).
     if (telemetry.engine_rpm < RPM_LUG_THRESHOLD &&
         telemetry.tps_pct > TPS_LUG_LOAD_PCT &&
-        telemetry.current_gear > 1) {
-        // Predictive check: skip if the lower gear would still sit below lug threshold.
-        // At crawl speeds no gear can rescue RPM — shifting just burns clutch packs.
-        // Require at least 300 RPM headroom above threshold after ratio change.
-        float predicted_rpm = telemetry.output_rpm * getTargetRatio(telemetry.current_gear - 1);
-        if (predicted_rpm < RPM_LUG_THRESHOLD + 300.0f) {
-            telemetry.last_safety_event = "LUG (speed too low, all gears lugging)";
-            return;
-        }
+        telemetry.current_gear > 2) {
         if (beginShift(telemetry.current_gear - 1, false, "LUG")) {
             telemetry.last_auto_shift_ms = millis();
             telemetry.last_safety_event = "AUTO DOWNSHIFT (lug " + String((int)telemetry.engine_rpm) + ")";
