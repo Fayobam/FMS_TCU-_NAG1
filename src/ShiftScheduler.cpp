@@ -193,7 +193,14 @@ void ShiftScheduler::checkSafetyShifts() {
     if (telemetry.engine_rpm < RPM_LUG_THRESHOLD &&
         telemetry.tps_pct > TPS_LUG_LOAD_PCT &&
         telemetry.current_gear > 1) {
-        // beginShift() will reject this if it would overrev, so it's inherently safe
+        // Predictive check: skip if the lower gear would still sit below lug threshold.
+        // At crawl speeds no gear can rescue RPM — shifting just burns clutch packs.
+        // Require at least 300 RPM headroom above threshold after ratio change.
+        float predicted_rpm = telemetry.output_rpm * getTargetRatio(telemetry.current_gear - 1);
+        if (predicted_rpm < RPM_LUG_THRESHOLD + 300.0f) {
+            telemetry.last_safety_event = "LUG (speed too low, all gears lugging)";
+            return;
+        }
         if (beginShift(telemetry.current_gear - 1, false, "LUG")) {
             telemetry.last_auto_shift_ms = millis();
             telemetry.last_safety_event = "AUTO DOWNSHIFT (lug " + String((int)telemetry.engine_rpm) + ")";

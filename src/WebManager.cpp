@@ -76,7 +76,13 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
 }
 
 void WebManager::broadcastTelemetry() {
-    if (millis() - _last_broadcast_time >= 100) { buildAndSendTelemetryJSON(); _last_broadcast_time = millis(); }
+    if (millis() - _last_broadcast_time >= 100) {
+        buildAndSendTelemetryJSON();
+        _last_broadcast_time = millis();
+        // Flush one pending NVS write per cycle (deferred from Core 1 evaluateShift).
+        // Core 0 only — preferences.putBytes() can block 1-10ms, unsafe on physics loop.
+        if (_adaptives) _adaptives->processDirtyTables();
+    }
     ws.cleanupClients();
 }
 

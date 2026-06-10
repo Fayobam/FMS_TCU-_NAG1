@@ -98,19 +98,33 @@ int8_t AdaptiveMemory::getModifier(bool is_upshift, uint8_t shift_idx, bool is_p
 
 void AdaptiveMemory::evaluateShift(bool is_upshift, uint8_t shift_idx, float tps_pct, float map_kpa,
                                    float engine_rpm, unsigned long shift_time_ms, bool flare, bool bind) {
-    if (shift_idx >= NUM_UPSHIFTS) return; // bounds guard
+    if (shift_idx >= NUM_UPSHIFTS) return;
     uint8_t l = getLoadBin(tps_pct, map_kpa);
     uint8_t r = getRpmBin(engine_rpm);
 
     if (is_upshift) {
         if (flare)     pressure_modifiers[shift_idx][l][r] = clampPressure(pressure_modifiers[shift_idx][l][r] + 2);
         else if (bind) pressure_modifiers[shift_idx][l][r] = clampPressure(pressure_modifiers[shift_idx][l][r] - 2);
-        saveTable(true, shift_idx, true);
+        _dirty_mask = (uint16_t)(_dirty_mask | (1u << shift_idx));              // upshift pressure bits 0-3
     } else {
         if (flare)     ds_pressure_modifiers[shift_idx][l][r] = clampPressure(ds_pressure_modifiers[shift_idx][l][r] + 2);
         else if (bind) ds_timing_modifiers[shift_idx][l][r]   = clampTiming(ds_timing_modifiers[shift_idx][l][r] + 5);
-        saveTable(false, shift_idx, true);
-        saveTable(false, shift_idx, false);
+        _dirty_mask = (uint16_t)(_dirty_mask | (1u << (8  + shift_idx)));      // downshift pressure bits 8-11
+        _dirty_mask = (uint16_t)(_dirty_mask | (1u << (12 + shift_idx)));      // downshift timing bits 12-15
+    }
+}
+
+void AdaptiveMemory::processDirtyTables() {
+    if (_dirty_mask == 0) return;
+    for (int bit = 0; bit < 16; bit++) {
+        if (_dirty_mask & (1u << bit)) {
+            bool is_up = (bit < 8);
+            bool is_p  = ((bit & 4) == 0);
+            uint8_t idx = bit & 3;
+            saveTable(is_up, idx, is_p);
+            _dirty_mask = (uint16_t)(_dirty_mask & ~(1u << bit));
+            return;  // one table per call; 100Hz × 16 tables = 160ms max flush
+        }
     }
 }
 

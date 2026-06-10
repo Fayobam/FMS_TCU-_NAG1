@@ -39,6 +39,10 @@ class AdaptiveMemory {
     static int8_t clampPressure(int v);
     static int8_t clampTiming(int v);
 
+    // Bit encoding: (is_upshift?0:8) + (is_pressure?0:4) + shift_idx (0-3)
+    // Bits 0-3: upshift pressure, 4-7: upshift prefill, 8-11: ds pressure, 12-15: ds timing
+    volatile uint16_t _dirty_mask = 0;
+
   public:
     AdaptiveMemory();
     void begin();
@@ -46,8 +50,13 @@ class AdaptiveMemory {
     int8_t getModifier(bool is_upshift, uint8_t shift_idx, bool is_pressure, float tps, float map_kpa, float rpm);
 
     // Explicit shift_idx + direction. flare/bind passed directly.
+    // Sets dirty bits — does NOT write NVS. Call processDirtyTables() from Core 0.
     void evaluateShift(bool is_upshift, uint8_t shift_idx, float tps_pct, float map_kpa,
                        float engine_rpm, unsigned long shift_time_ms, bool flare, bool bind);
+
+    // Process ONE pending NVS write per call. Call at 100Hz from Core 0 (WebManager).
+    // Max flush latency for all 16 tables = 160ms — acceptable for adaptive learning.
+    void processDirtyTables();
 
     int8_t* getTablePtr(bool is_upshift, uint8_t shift_index, bool is_pressure);
     void saveTable(bool is_upshift, uint8_t shift_index, bool is_pressure);
