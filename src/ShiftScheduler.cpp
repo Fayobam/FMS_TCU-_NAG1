@@ -181,8 +181,10 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
 // ----------------------------------------------------------------------------
 void ShiftScheduler::checkSafetyShifts() {
     if (_current_phase != PHASE_CRUISING) return;
-    if (telemetry.prnd_state != 'D' && telemetry.prnd_state != '4' &&
-        telemetry.prnd_state != '3' && telemetry.prnd_state != '2') return;
+    // Any forward range, including manual limit positions '1'/'2'. Engine-overrev
+    // protection deliberately overrides a manual limit detent — hitting the
+    // limiter is worse than breaching the driver's requested gear cap.
+    if (!isForwardRange()) return;
     if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
 
     // --- OVERREV: force an upshift before the engine hits the limiter ---
@@ -338,6 +340,12 @@ bool ShiftScheduler::checkReverseInhibit() {
 // MAIN UPDATE (called every 1ms from core 1)
 // ============================================================================
 void ShiftScheduler::update() {
+    // ---- Reverse/Park interlock + R-while-moving failsafe (HIGHEST PRIORITY) ----
+    // Runs above even limp mode: if we're rolling forward and R is selected we must
+    // dump line pressure, never let the limp handler clamp B3 at max pressure. Also
+    // maintains the RP_LOCK solenoid every loop regardless of any other state.
+    if (checkReverseInhibit()) return;
+
     // ---- Limp-mode enforcement + recovery ----
     if (telemetry.is_limp_mode) {
         _solenoids->setLinePressure(100);
@@ -382,9 +390,6 @@ void ShiftScheduler::update() {
         _current_phase = PHASE_CRUISING;
         telemetry.last_safety_event = "SHIFT ABORTED (selector left drive)";
     }
-
-    // ---- Reverse/Park interlock + R-while-moving failsafe ----
-    if (checkReverseInhibit()) return;     // failsafe owns the outputs this loop
 
     calculateLinePressure();
     checkLimpMode(target_ratio);
