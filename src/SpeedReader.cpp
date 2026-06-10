@@ -54,30 +54,16 @@ void SpeedReader::begin() {
 // ============================================================================
 // 722.6 PLANETARY KINEMATICS (The "Magic" Math)
 // ============================================================================
-float SpeedReader::calculateTurbineRPM(float n2_rpm, float n3_rpm, uint8_t current_gear) {
-    // 722.6 Front Planetary Gearset Constants
-    const float PLANETARY_MULTIPLIER_N3 = 1.48f; // (Ring + Sun) / Ring
-    const float PLANETARY_MULTIPLIER_N2 = 0.48f; // Sun / Ring
-
-    switch (current_gear) {
-        case 1:
-        case 2:
-        case 3:
-        case 4:
-            // 1st-4th: Input Shaft is combination of Sun Gear (N2) & Carrier (N3)
-            return (n3_rpm * PLANETARY_MULTIPLIER_N3) - (n2_rpm * PLANETARY_MULTIPLIER_N2);
-
-        case 5:
-            // 5th Gear: N3 drum is locked to 0 RPM. Calculate using only N2.
-            return n2_rpm * 0.83f; 
-
-        default:
-            // Fallback (Park/Neutral/Reverse)
-            return n3_rpm; 
-    }
+float SpeedReader::calculateTurbineRPM(float n2_rpm, float n3_rpm) {
+    // NAG52 unified formula — one expression, all gears, no gear-position dependency:
+    //   turbine = (N2 * K) - (N3 * (K-1))   K = N2_N3_BLEND_K = 1.61
+    // Verify: N3=0 (gears 1&5) → N2*1.61; N2=N3 (3rd gear direct) → N2*1.0 ✓
+    // Prior code had N2/N3 swapped → negative turbine RPM in 1st gear.
+    float turbine = (n2_rpm * N2_N3_BLEND_K) - (n3_rpm * (N2_N3_BLEND_K - 1.0f));
+    return fmaxf(0.0f, turbine);
 }
 
-void SpeedReader::update(uint8_t current_gear) {
+void SpeedReader::update() {
     unsigned long current_time = millis();
     unsigned long delta_time = current_time - _last_read_time;
 
@@ -99,7 +85,7 @@ void SpeedReader::update(uint8_t current_gear) {
         telemetry.engine_rpm = (pulses_eng / PULSES_PER_REV_ENG)  * (60000.0f / delta_time);  
 
         // 3. Run planetary kinematics to find true Turbine Input Speed
-        telemetry.turbine_rpm = calculateTurbineRPM(_raw_n2_rpm, _raw_n3_rpm, current_gear);
+        telemetry.turbine_rpm = calculateTurbineRPM(_raw_n2_rpm, _raw_n3_rpm);
 
         // Constrain to prevent random math drops below 0
         if (telemetry.turbine_rpm < 0) telemetry.turbine_rpm = 0;

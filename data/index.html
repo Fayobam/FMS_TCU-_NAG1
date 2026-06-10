@@ -46,8 +46,8 @@
         .tuner-grid { display: grid; grid-template-columns: 60px repeat(16, 50px); gap: 4px; width: max-content; }
         .grid-cell { background: var(--bg); border: 1px solid var(--slate-500); color: var(--white); text-align: center; font-size: 0.8rem; border-radius: 4px; padding: 4px; font-family: monospace; }
         .grid-header { background: transparent; border: none; font-weight: bold; color: var(--slate-400); font-size: 0.7rem; display: flex; align-items: center; justify-content: center; }
-        input.grid-cell { width: 100%; height: 100%; outline: none; transition: background 0.2s; }
-        input.grid-cell:focus { border-color: var(--cyan); background: rgba(34, 211, 238, 0.1); }
+        input.grid-cell { width: 100%; height: 100%; outline: none; transition: background 0.2s, color 0.2s; }
+        input.grid-cell:focus { border-color: var(--cyan) !important; outline: 1px solid var(--cyan); }
         
         .connection-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
         .conn-live { background: var(--emerald); box-shadow: 0 0 10px var(--emerald); animation: pulse 2s infinite; }
@@ -74,6 +74,7 @@
     <div class="tabs">
         <button class="tab active" onclick="switchTab('dashboard')">Telemetry</button>
         <button class="tab" onclick="switchTab('tuner')">Calibration Studio</button>
+        <button class="tab" onclick="switchTab('shift')">Shift View</button>
     </div>
 
     <!-- DASHBOARD TAB -->
@@ -151,11 +152,12 @@
 
             <div class="glass-panel span-full">
                 <span class="label" style="margin-bottom: 0.75rem;">Adaptive Metrics</span>
-                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem;">
+                <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.5rem;">
                     <div class="status-box"><span class="label" style="color:var(--slate-500);">Duration</span><span id="shift-time-val" class="data-font">-- ms</span></div>
                     <div class="status-box"><span class="label" style="color:var(--slate-500);">Ratio</span><span id="ratio-val" class="data-font">0.00</span></div>
                     <div class="status-box" id="flare-box"><span class="label" style="color:var(--slate-500);">Flare</span><span id="flare-val" class="data-font" style="color:var(--slate-400);">CLEAN</span></div>
                     <div class="status-box" id="bind-box"><span class="label" style="color:var(--slate-500);">Bind</span><span id="bind-val" class="data-font" style="color:var(--slate-400);">CLEAN</span></div>
+                    <div class="status-box" id="ht-box"><span class="label" style="color:var(--slate-500);">Torque Mode</span><span id="ht-val" class="data-font" style="color:var(--slate-400);">NORMAL</span></div>
                 </div>
             </div>
         </div>
@@ -186,12 +188,35 @@
             <button class="primary" onclick="flashTable()" style="margin-left: auto;">Flash to Hardware</button>
         </div>
 
+        <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.5rem;">
+            <span style="font-size:0.65rem; color:var(--slate-400);">−60</span>
+            <div style="width:140px; height:8px; border-radius:4px; background:linear-gradient(to right, rgba(34,211,238,0.6), rgba(30,41,59,0.4), rgba(251,113,133,0.65));"></div>
+            <span style="font-size:0.65rem; color:var(--slate-400);">+60</span>
+            <span style="font-size:0.65rem; color:var(--slate-500); margin-left:0.5rem;">Cyan = reduced &nbsp;·&nbsp; Red = added</span>
+        </div>
         <div class="grid-container">
             <div class="tuner-grid" id="tuner-grid">
                 <!-- Javascript will generate the 16x16 grid here -->
             </div>
         </div>
-        <p style="font-size: 0.7rem; color: var(--slate-400); margin-top: 1rem; text-align: right;">* Green = Subtracted Pressure/Time | Red = Added Pressure/Time</p>
+    </main>
+
+    <!-- SHIFT CHART TAB -->
+    <main id="tab-shift" class="tab-content glass-panel" style="flex-grow:1; display:flex; flex-direction:column; gap:0.5rem; padding:0.75rem; min-height:400px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+            <div style="display:flex; gap:1.2rem; align-items:center;">
+                <span class="label" style="font-size:0.75rem; margin:0;">Shift Trace — 6s rolling</span>
+                <div style="display:flex; gap:0.9rem; font-size:0.65rem; color:var(--slate-400); font-family:monospace;">
+                    <span><span style="color:var(--cyan);">&#9632;</span> MPC</span>
+                    <span><span style="color:var(--purple);">&#9632;</span> SPC</span>
+                    <span><span style="color:var(--orange);">&#9632;</span> TPS</span>
+                    <span><span style="color:#e2e8f0;">&#9632;</span> Ratio</span>
+                    <span><span style="color:var(--emerald);">&#9632;</span> Eng/Turb</span>
+                </div>
+            </div>
+            <div id="phase-badge" style="font-size:0.65rem; font-weight:800; letter-spacing:0.08em; padding:3px 12px; border-radius:999px; background:rgba(0,0,0,0.3); color:var(--slate-500); transition:all 0.3s;">CRUISE</div>
+        </div>
+        <canvas id="shift-canvas" style="flex-grow:1; width:100%; display:block; border-radius:0.75rem; min-height:320px;"></canvas>
     </main>
 
     <footer class="mt-auto pt-8 pb-2 text-center text-[10px] text-slate-800 tracking-widest uppercase select-none opacity-40">
@@ -210,7 +235,7 @@
         }
 
         const grid = document.getElementById('tuner-grid');
-        grid.innerHTML = '<div class="grid-header">Load \\ RPM</div>';
+        grid.innerHTML = '<div class="grid-header" title="Load units = TPS% + (MAP-100)*0.8">Load↓ RPM→</div>';
         
         for(let rpm = 0; rpm < 16; rpm++) {
             grid.innerHTML += `<div class="grid-header">${400 + (rpm * 400)}</div>`;
@@ -218,7 +243,7 @@
 
         let inputs = [];
         for(let load = 0; load < 16; load++) {
-            grid.innerHTML += `<div class="grid-header">${load * 10}%</div>`;
+            grid.innerHTML += `<div class="grid-header">${Math.round(load * 12.5)}</div>`;
             for(let rpm = 0; rpm < 16; rpm++) {
                 grid.innerHTML += `<input type="number" class="grid-cell" id="cell_${load}_${rpm}" value="0" onchange="colorCell(this)">`;
             }
@@ -232,9 +257,20 @@
 
         function colorCell(input) {
             const val = parseInt(input.value) || 0;
-            if (val < 0) input.style.color = 'var(--emerald)';
-            else if (val > 0) input.style.color = 'var(--rose)';
-            else input.style.color = 'var(--white)';
+            const intensity = Math.min(Math.abs(val) / 60, 1);
+            if (val < 0) {
+                input.style.background = `rgba(34, 211, 238, ${(intensity * 0.55).toFixed(2)})`;
+                input.style.color = 'var(--white)';
+                input.style.borderColor = `rgba(34, 211, 238, ${(intensity * 0.8).toFixed(2)})`;
+            } else if (val > 0) {
+                input.style.background = `rgba(251, 113, 133, ${(intensity * 0.6).toFixed(2)})`;
+                input.style.color = 'var(--white)';
+                input.style.borderColor = `rgba(251, 113, 133, ${(intensity * 0.8).toFixed(2)})`;
+            } else {
+                input.style.background = 'var(--bg)';
+                input.style.color = 'var(--slate-500)';
+                input.style.borderColor = 'var(--slate-500)';
+            }
         }
 
         // ----------------------------------------------------
@@ -313,6 +349,12 @@
                 const bb = document.getElementById('bind-box'), bv = document.getElementById('bind-val');
                 if(data.bind) { bb.style.background = 'rgba(251, 113, 133, 0.2)'; bb.style.borderColor = 'var(--rose)'; bv.style.color = 'var(--rose)'; bv.innerText = 'DETECTED'; }
                 else { bb.style.background = 'rgba(30, 41, 59, 0.4)'; bb.style.borderColor = 'transparent'; bv.style.color = 'var(--slate-400)'; bv.innerText = 'CLEAN'; }
+
+                const hb = document.getElementById('ht-box'), hv = document.getElementById('ht-val');
+                if(data.htMode) { hb.style.background = 'rgba(251, 146, 60, 0.2)'; hb.style.borderColor = 'var(--orange)'; hv.style.color = 'var(--orange)'; hv.innerText = 'ACTIVE'; }
+                else { hb.style.background = 'rgba(30, 41, 59, 0.4)'; hb.style.borderColor = 'transparent'; hv.style.color = 'var(--slate-400)'; hv.innerText = 'NORMAL'; }
+
+                ShiftChart.push(data);
             } 
             else if (data.type === "table_data") {
                 for(let i = 0; i < 256; i++) {
@@ -350,6 +392,243 @@
             btn.style.background = "var(--emerald)";
             setTimeout(() => { btn.innerText = "Flash to Hardware"; btn.style.background = "var(--cyan)"; }, 2000);
         }
+    // ================================================================
+    // SHIFT CHART ENGINE
+    // Rolling 6-second canvas chart: pressures, ratio, RPM + phases
+    // ================================================================
+    const ShiftChart = (function () {
+        const WIN = 6000, N = 700;
+        const T   = new Float64Array(N);
+        const SPC = new Uint8Array(N),  MPC = new Uint8Array(N);
+        const TPS = new Float32Array(N), RAT = new Float32Array(N);
+        const ENG = new Uint16Array(N),  TRB = new Uint16Array(N);
+        const GER = new Uint8Array(N),   PHS = new Uint8Array(N);
+        let head = 0, cnt = 0;
+
+        function push(d) {
+            T[head]=performance.now(); SPC[head]=d.spc|0; MPC[head]=d.mpc|0;
+            TPS[head]=d.tps||0; RAT[head]=d.ratio||0;
+            ENG[head]=d.engRpm|0; TRB[head]=d.turbRpm|0;
+            GER[head]=d.gear|0; PHS[head]=d.phase|0;
+            head=(head+1)%N; if(cnt<N)cnt++;
+        }
+        function at(j){return(head-cnt+j+N)%N;}
+
+        const PNAME =['Cruise','Prefill','Overlap','Inertia','DS Rel','DS Sync','DS Catch','Done'];
+        const PCOL  =[null,
+            'rgba(34,211,238,.13)','rgba(192,132,252,.18)','rgba(251,146,60,.22)',
+            'rgba(52,211,153,.12)','rgba(52,211,153,.18)','rgba(251,113,133,.22)',
+            'rgba(148,163,184,.08)'];
+        const PBADGE=[null,'#22d3ee','#c084fc','#fb923c','#34d399','#34d399','#fb7185','#94a3b8'];
+
+        const CY='#22d3ee', PU='#c084fc', OR='#fb923c', EM='#34d399';
+        const WT='#e2e8f0', SL='rgba(100,116,139,.65)', GR='rgba(255,255,255,.05)';
+
+        const canvas = document.getElementById('shift-canvas');
+        const ctx    = canvas.getContext('2d');
+        let cssW=0, cssH=0;
+
+        // ctx.roundRect polyfill for older WebKit
+        if (!ctx.roundRect) {
+            ctx.roundRect = function(x,y,w,h,r) {
+                this.beginPath();
+                this.moveTo(x+r,y); this.lineTo(x+w-r,y);
+                this.quadraticCurveTo(x+w,y,x+w,y+r);
+                this.lineTo(x+w,y+h-r);
+                this.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+                this.lineTo(x+r,y+h);
+                this.quadraticCurveTo(x,y+h,x,y+h-r);
+                this.lineTo(x,y+r);
+                this.quadraticCurveTo(x,y,x+r,y);
+                this.closePath();
+            };
+        }
+
+        function resize() {
+            const r=canvas.getBoundingClientRect();
+            if(!r.width||!r.height)return false;
+            const dpr=window.devicePixelRatio||1;
+            if(canvas.width===r.width*dpr&&canvas.height===r.height*dpr)return true;
+            canvas.width=r.width*dpr; canvas.height=r.height*dpr;
+            cssW=r.width; cssH=r.height;
+            ctx.resetTransform(); ctx.scale(dpr,dpr); return true;
+        }
+
+        function xOf(ts, tnow, px, pw) {
+            const age=tnow-ts;
+            return (age>WIN||age<0)?-1: px+pw*(1-age/WIN);
+        }
+
+        // Draw one data panel
+        // cfg: { y, h, title, ymax, yunit, series:[{arr,color,lw,dash,scale}] }
+        function panel(cfg) {
+            if(cnt<2)return;
+            const {y,h,title,ymax,yunit,series}=cfg;
+            const PL=6,PR=50,PT=20,PB=20;
+            const px=PL, py=y+PT, pw=cssW-PL-PR, ph=h-PT-PB;
+            if(pw<=0||ph<=0)return;
+            const tnow=T[at(cnt-1)];
+
+            // Panel background
+            ctx.fillStyle='rgba(15,23,42,.55)';
+            ctx.beginPath(); ctx.roundRect(0,y,cssW,h,10); ctx.fill();
+            ctx.strokeStyle='rgba(255,255,255,.06)'; ctx.lineWidth=.5; ctx.stroke();
+
+            ctx.save();
+            ctx.beginPath(); ctx.roundRect(0,y,cssW,h,10); ctx.clip();
+
+            // Phase colour bands
+            let bs=-1,bp=-1;
+            const flush=ex=>{
+                if(bp>0&&PCOL[bp]&&bs>=0){
+                    ctx.fillStyle=PCOL[bp];
+                    const x1=Math.max(px,bs),x2=Math.min(ex,px+pw);
+                    if(x2>x1)ctx.fillRect(x1,py,x2-x1,ph);
+                }
+            };
+            for(let i=0;i<cnt;i++){
+                const si=at(i),sx=xOf(T[si],tnow,px,pw);
+                if(sx<0)continue;
+                if(PHS[si]!==bp){flush(sx);bs=sx;bp=PHS[si];}
+                if(i===cnt-1)flush(sx+2);
+            }
+
+            // Horizontal grid lines + right Y labels
+            ctx.strokeStyle=GR; ctx.lineWidth=.5; ctx.setLineDash([]);
+            ctx.fillStyle=SL; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='left';
+            for(let g=0;g<=4;g++){
+                const v=ymax*g/4, gy=py+ph*(1-g/4);
+                ctx.beginPath(); ctx.moveTo(px,gy); ctx.lineTo(px+pw,gy); ctx.stroke();
+                const lbl=v>=1000?(v/1000).toFixed(1)+'k':Number.isInteger(v)?v.toFixed(0):v.toFixed(1);
+                ctx.fillText(lbl,cssW-PR+4,gy+4);
+            }
+            ctx.fillStyle='rgba(100,116,139,.35)'; ctx.font='9px ui-monospace,monospace';
+            ctx.fillText(yunit,cssW-PR+4,y+h-5);
+
+            // Panel title
+            ctx.fillStyle='rgba(148,163,184,.55)';
+            ctx.font='700 9px -apple-system,BlinkMacSystemFont,sans-serif';
+            ctx.textAlign='left'; ctx.fillText(title,PL+4,y+14);
+
+            // Gear change markers (shared across all panels)
+            ctx.setLineDash([3,4]); ctx.lineWidth=1;
+            ctx.strokeStyle='rgba(255,255,255,.18)';
+            let lg=-1;
+            for(let i=1;i<cnt;i++){
+                const si=at(i);
+                if(GER[si]!==lg&&lg>0&&GER[si]>0){
+                    const sx=xOf(T[si],tnow,px,pw);
+                    if(sx>=px){
+                        ctx.beginPath(); ctx.moveTo(sx,py); ctx.lineTo(sx,py+ph); ctx.stroke();
+                        ctx.fillStyle='rgba(255,255,255,.55)'; ctx.font='bold 9px ui-monospace,monospace';
+                        ctx.textAlign='center'; ctx.fillText('G'+GER[si],sx,py+ph-3);
+                    }
+                }
+                lg=GER[si];
+            }
+            ctx.setLineDash([]);
+
+            // Data lines
+            const usedY={};
+            for(const s of series){
+                const sc=s.scale||ymax;
+                ctx.strokeStyle=s.color; ctx.lineWidth=s.lw||1.5;
+                if(s.dash)ctx.setLineDash([5,5]); else ctx.setLineDash([]);
+                ctx.beginPath();
+                let first=true;
+                for(let i=0;i<cnt;i++){
+                    const si=at(i),sx=xOf(T[si],tnow,px,pw);
+                    if(sx<0)continue;
+                    const sy=py+ph*(1-Math.min(s.arr[si]/sc,1));
+                    if(first){ctx.moveTo(sx,sy);first=false;}else ctx.lineTo(sx,sy);
+                }
+                ctx.stroke(); ctx.setLineDash([]);
+
+                if(!first){
+                    const li=at(cnt-1);
+                    const lx=xOf(T[li],tnow,px,pw);
+                    const ly=py+ph*(1-Math.min(s.arr[li]/sc,1));
+                    // dot
+                    ctx.beginPath(); ctx.arc(lx,ly,3.5,0,6.28);
+                    ctx.fillStyle=s.color; ctx.fill();
+                    // live value label (nudge if overlapping)
+                    const raw=s.arr[li];
+                    const lbl=raw>=1000?(raw/1000).toFixed(1)+'k':raw<10?raw.toFixed(2):raw.toFixed(1);
+                    let ly2=Math.round(ly+4);
+                    while(Object.values(usedY).some(prev=>Math.abs(prev-ly2)<11))ly2+=11;
+                    usedY[s.color]=ly2;
+                    ctx.fillStyle=s.color; ctx.font='bold 10px ui-monospace,monospace';
+                    ctx.textAlign='right'; ctx.fillText(lbl,cssW-3,ly2);
+                }
+            }
+
+            // Time axis labels on LAST panel only (caller decides via cfg.timeAxis)
+            if(cfg.timeAxis){
+                ctx.fillStyle='rgba(100,116,139,.45)'; ctx.font='9px ui-monospace,monospace';
+                ctx.textAlign='center';
+                for(let s=0;s<=6;s++){
+                    const tx=px+pw*s/6;
+                    const age=WIN*(1-s/6)/1000;
+                    ctx.fillText(age===0?'now':'-'+age.toFixed(0)+'s',tx,y+h-3);
+                }
+            }
+
+            ctx.restore();
+        }
+
+        // Update phase badge in the tab header
+        function updateBadge(){
+            if(!cnt)return;
+            const ph=PHS[at(cnt-1)];
+            const badge=document.getElementById('phase-badge');
+            if(!badge)return;
+            badge.textContent=PNAME[ph]||'Cruise';
+            if(ph===0){
+                badge.style.color='#64748b'; badge.style.background='rgba(0,0,0,.3)';
+            } else {
+                badge.style.color='#f8fafc';
+                badge.style.background=(PBADGE[ph]||'#94a3b8')
+                    .replace(/^#/,'')  // use the badge colour at low opacity
+                    .replace(/^(..)(..)(..)$/,(m,r,g,b)=>
+                        `rgba(${parseInt(r,16)},${parseInt(g,16)},${parseInt(b,16)},.35)`);
+            }
+        }
+
+        function render(){
+            requestAnimationFrame(render);
+            if(!document.getElementById('tab-shift').classList.contains('active'))return;
+            if(!resize())return;
+
+            ctx.clearRect(0,0,cssW,cssH);
+
+            const GAP=6;
+            const h1=Math.round(cssH*.40);
+            const h2=Math.round(cssH*.31);
+            const h3=cssH-h1-h2-GAP*2;
+
+            panel({ y:0,          h:h1, title:'PRESSURES',            ymax:100,  yunit:'%',
+                series:[
+                    {arr:MPC,color:CY, lw:1.5},
+                    {arr:SPC,color:PU, lw:2.0},
+                    {arr:TPS,color:OR, lw:1.0, dash:true},
+                ]});
+            panel({ y:h1+GAP,     h:h2, title:'GEAR RATIO',           ymax:4.5,  yunit:'ratio',
+                series:[
+                    {arr:RAT,color:WT, lw:2.5, scale:4.5},
+                ]});
+            panel({ y:h1+h2+GAP*2,h:h3, title:'ENGINE & TURBINE RPM', ymax:7000, yunit:'RPM',
+                timeAxis:true,
+                series:[
+                    {arr:ENG,color:CY, lw:1.5, scale:7000},
+                    {arr:TRB,color:PU, lw:1.5, scale:7000},
+                ]});
+
+            updateBadge();
+        }
+        requestAnimationFrame(render);
+        return {push};
+    })();
+
     </script>
 </body>
 </html>

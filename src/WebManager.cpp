@@ -102,13 +102,15 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["tccTarget"] = telemetry.tcc_target_slip_rpm;
     doc["tccActual"] = telemetry.tcc_actual_slip_rpm;
 
-    // --- NEW: safety + limp status ---
     doc["limp"]      = telemetry.is_limp_mode;
     doc["limpReason"]= telemetry.limp_mode_reason;
     doc["safety"]    = telemetry.last_safety_event;
     doc["atfTemp"]   = telemetry.atf_temp_c;
+    doc["htMode"]    = telemetry.high_torque_mode;
+    doc["phase"]     = telemetry.shift_phase;
 
-    char buffer[640];
-    size_t len = serializeJson(doc, buffer);
+    char buffer[1024];
+    size_t len = serializeJson(doc, buffer, sizeof(buffer));
+    if (len >= sizeof(buffer) - 1) Serial.println("WARNING: Telemetry JSON truncated — increase buffer!");
     ws.textAll(buffer, len);
 }

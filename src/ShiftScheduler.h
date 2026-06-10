@@ -42,20 +42,29 @@ class ShiftScheduler {
     float _turbine_rpm_at_shift_start;
     float _output_rpm_at_shift_start;
     float _ratio_at_overlap_start;  // for flare detection
+    bool  _prev_pn_raw;             // edge-detect for garage shift trigger
 
+    // TPS rate-of-change torque anticipation
+    float         _prev_tps;
+    bool          _high_torque_mode;
+    unsigned long _ht_release_start_ms;  // 0 = not in cooldown
+
+    // Performance bias: floor raised, boost-zone bins (4-8) pushed hard.
+    // Adaptive pulls back 2% per bind event — start firm, let it learn down.
     const uint8_t HOLDING_PRESSURE_MAP[5][16] = {
-        { 12, 14, 16, 20, 26, 35, 48, 62, 75, 85, 92, 98, 100, 100, 100, 100 },
-        { 15, 17, 20, 24, 30, 42, 55, 68, 80, 90, 95, 100, 100, 100, 100, 100 },
-        { 18, 20, 24, 28, 38, 50, 62, 75, 88, 95, 100, 100, 100, 100, 100, 100 },
-        { 22, 25, 28, 35, 45, 58, 72, 85, 95, 100, 100, 100, 100, 100, 100, 100 },
-        { 30, 35, 40, 48, 60, 75, 88, 98, 100, 100, 100, 100, 100, 100, 100, 100 }
+        { 20, 24, 30, 40, 52, 65, 78, 88, 95, 100, 100, 100, 100, 100, 100, 100 }, // G1
+        { 22, 26, 32, 42, 55, 68, 80, 90, 98, 100, 100, 100, 100, 100, 100, 100 }, // G2
+        { 24, 28, 35, 45, 58, 72, 84, 94, 100, 100, 100, 100, 100, 100, 100, 100 }, // G3
+        { 28, 32, 40, 50, 62, 76, 88, 97, 100, 100, 100, 100, 100, 100, 100, 100 }, // G4
+        { 38, 45, 55, 65, 78, 90, 98, 100, 100, 100, 100, 100, 100, 100, 100, 100 } // G5
     };
 
     void calculateLinePressure();
     void calculateLiveRatio();
     void updateTCC();
-    void checkSafetyShifts();                 // NEW: overrev / lug protection
-    void checkLimpMode(float target_ratio);   // factored out, load-aware
+    void checkSafetyShifts();
+    void checkLimpMode(float target_ratio);
+    void checkTpsROC();                       // TPS rate-of-change torque anticipation
     bool beginShift(uint8_t target_gear, bool is_upshift, const char* source);
     float getTargetRatio(uint8_t gear);
     uint8_t getRoutingSolenoidForShift(uint8_t from_gear, uint8_t to_gear);

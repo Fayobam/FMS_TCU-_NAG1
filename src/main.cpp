@@ -70,7 +70,7 @@ void core1PhysicsTask(void *pvParameters) {
 
         speed_update_counter++;
         if (speed_update_counter >= 50) {
-            speedReader.update(telemetry.current_gear);
+            speedReader.update();
             speed_update_counter = 0;
         }
 

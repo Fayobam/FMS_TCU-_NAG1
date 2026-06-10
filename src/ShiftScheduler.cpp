@@ -19,6 +19,10 @@ void ShiftScheduler::begin() {
     _current_phase = PHASE_CRUISING;
     telemetry.current_gear = 1;
     telemetry.target_gear = 1;
+    _prev_pn_raw = true;
+    _prev_tps = 0.0f;
+    _high_torque_mode = false;
+    _ht_release_start_ms = 0;
 }
 
 // ----------------------------------------------------------------------------
@@ -43,6 +47,13 @@ uint8_t ShiftScheduler::getRoutingSolenoidForShift(uint8_t from_gear, uint8_t to
 
 // ----------------------------------------------------------------------------
 void ShiftScheduler::calculateLinePressure() {
+    // TPS ROC mode: torque is arriving NOW — skip the lookup, go straight to max.
+    // Only during cruise; during a shift the shift logic already manages pressures.
+    if (_high_torque_mode && _current_phase == PHASE_CRUISING) {
+        _solenoids->setLinePressure(100);
+        return;
+    }
+
     float target_pressure_pct = 0.0f;
     if (_current_phase == PHASE_CRUISING) {
         uint8_t gear_idx = constrain(telemetry.current_gear - 1, 0, 4);
@@ -54,8 +65,17 @@ void ShiftScheduler::calculateLinePressure() {
         if (telemetry.map_kpa > 100.0f) target_pressure_pct += (telemetry.map_kpa - 100.0f) * 2.0f;
         target_pressure_pct += 20.0f;
     }
-    if (telemetry.atf_temp_c < 40.0f) target_pressure_pct *= 0.8f;
-    else if (telemetry.atf_temp_c > 100.0f) target_pressure_pct += 15.0f;
+    // Cold ATF is viscous — circuits fill slowly, needs more pressure.
+    // Hot ATF leaks past seals — needs more pressure to maintain clamping.
+    // Normal operating range (40-80°C) is the baseline.
+    float atf = telemetry.atf_temp_c;
+    float temp_mult = 1.0f;
+    if      (atf < 20.0f)  temp_mult = 1.30f;  // very cold: +30%
+    else if (atf < 40.0f)  temp_mult = 1.15f;  // cold: +15%
+    else if (atf < 80.0f)  temp_mult = 1.00f;  // normal
+    else if (atf < 110.0f) temp_mult = 1.05f;  // warm: minor seal leakage +5%
+    else                    temp_mult = 1.20f;  // hot: significant leakage +20%
+    target_pressure_pct *= temp_mult;
 
     _solenoids->setLinePressure((uint8_t)constrain(target_pressure_pct, 10.0f, 100.0f));
 }
@@ -75,7 +95,13 @@ void ShiftScheduler::updateTCC() {
     int current_tcc_pwm = telemetry.tcc_lockup_pct;
 
     if (_current_phase == PHASE_CRUISING) {
-        if (telemetry.map_kpa > 105.0f || telemetry.tps_pct > 75.0f) {
+        // Force TCC open if: ROC mode active (fast tip-in), MAP shows boost,
+        // or TPS is above moderate demand. ROC mode takes priority — it reacts
+        // faster than MAP settling.
+        bool force_open = _high_torque_mode ||
+                          telemetry.map_kpa > 105.0f ||
+                          telemetry.tps_pct > 45.0f;
+        if (force_open) {
             telemetry.tcc_target_slip_rpm = 500.0f;
             current_tcc_pwm -= 2;
         } else if (telemetry.engine_rpm < 1400.0f || telemetry.current_gear == 1) {
@@ -212,6 +238,55 @@ void ShiftScheduler::checkLimpMode(float target_ratio) {
 }
 
 // ============================================================================
+// TPS RATE-OF-CHANGE TORQUE ANTICIPATION
+// TVS supercharger delivers torque with throttle, not with MAP settling.
+// A fast tip-in means torque is arriving NOW — get ahead of it.
+// ============================================================================
+void ShiftScheduler::checkTpsROC() {
+    if (!telemetry.drive_engaged) {
+        _prev_tps = telemetry.tps_pct;
+        return;
+    }
+
+    float roc = telemetry.tps_pct - _prev_tps;  // %/ms (called at 1kHz)
+    _prev_tps = telemetry.tps_pct;
+
+    // --- Entry: fast tip-in detected ---
+    if (roc > TPS_ROC_TRIGGER_PCT_MS) {
+        _high_torque_mode = true;
+        telemetry.high_torque_mode = true;
+        _ht_release_start_ms = 0;   // cancel any in-progress cooldown
+        return;
+    }
+
+    if (!_high_torque_mode) return;
+
+    // --- In high-torque mode: watch for genuine backing-off ---
+    // Both conditions must be true together: ROC settled AND TPS actually low.
+    // Either condition alone (e.g. momentary plateau at high TPS) keeps the mode alive.
+    bool backing_off = (roc < TPS_ROC_RELEASE_PCT_MS &&
+                        telemetry.tps_pct < TPS_ROC_RELEASE_HOLD);
+
+    if (!backing_off) {
+        _ht_release_start_ms = 0;   // re-arm: still demanding torque
+        return;
+    }
+
+    // Start cooldown on first tick where backing-off is confirmed
+    if (_ht_release_start_ms == 0) {
+        _ht_release_start_ms = millis();
+        return;
+    }
+
+    // Exit when cooldown expires
+    if (millis() - _ht_release_start_ms >= TPS_ROC_COOLDOWN_MS) {
+        _high_torque_mode = false;
+        telemetry.high_torque_mode = false;
+        _ht_release_start_ms = 0;
+    }
+}
+
+// ============================================================================
 // MAIN UPDATE (called every 1ms from core 1)
 // ============================================================================
 void ShiftScheduler::update() {
@@ -237,6 +312,8 @@ void ShiftScheduler::update() {
         return;
     }
 
+    checkTpsROC();
+    telemetry.shift_phase = (uint8_t)_current_phase;
     calculateLinePressure();
     calculateLiveRatio();
 
@@ -249,14 +326,25 @@ void ShiftScheduler::update() {
 
     switch (_current_phase) {
         case PHASE_CRUISING: {
-            // Garage engagement: use the SCHEDULER latch, not the raw sensor.
-            if (telemetry.prnd_state == 'D' && !telemetry.drive_engaged && telemetry.pn_switch_raw) {
+            // Garage shift: trigger on the FALLING EDGE of the P/N switch.
+            // The physical P/N switch (multiplexed on ATF_TEMP pin) opens the moment
+            // the manual valve leaves P/N — this is the reliable trigger, independent
+            // of whether the 4-bit PRND decoder has settled on 'D' yet.
+            bool pn_falling_edge = _prev_pn_raw && !telemetry.pn_switch_raw;
+            _prev_pn_raw = telemetry.pn_switch_raw;
+
+            if (pn_falling_edge && !telemetry.drive_engaged) {
+                // Acknowledge the hydraulic default: 722.6 sits in 2nd gear with no
+                // electronics. Driver selects 1st via paddle-down if they want it.
                 telemetry.drive_engaged = true;
-                _solenoids->fireShiftSolenoid(PIN_Y3);
-                _solenoids->setShiftPressure(20);
+                telemetry.current_gear  = 2;
+                telemetry.target_gear   = 2;
             }
+
+            // Returning to P/N: re-arm edge detector.
             if (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N') {
-                telemetry.drive_engaged = false; // re-arm for next D engagement
+                telemetry.drive_engaged = false;
+                _prev_pn_raw = true;
             }
 
             // MANUAL UPSHIFT
@@ -276,20 +364,18 @@ void ShiftScheduler::update() {
 
         case PHASE_PREFILL:
             if (time_in_phase_ms > (uint32_t)(60 + _current_timing_mod)) {
-                _solenoids->setShiftPressure(constrain(30 + _current_pressure_mod, 0, 100));
-                _ratio_at_overlap_start = telemetry.live_ratio;     // baseline for flare
+                _solenoids->setShiftPressure(constrain(45 + _current_pressure_mod, 0, 100));
+                _ratio_at_overlap_start = telemetry.live_ratio;
                 _current_phase = PHASE_OVERLAP; _phase_start_tick = current_tick;
-                _shift_stopwatch_start = millis();
+                // Stopwatch intentionally NOT reset here — last_shift_time_ms must
+                // measure the full shift from trigger (set in beginShift) to completion.
             }
             break;
 
         case PHASE_OVERLAP:
-            // Ramp now reads the REAL commanded pressure (telemetry feedback fix)
-            if (telemetry.shift_pressure_pct < 80)
+            if (telemetry.shift_pressure_pct < 90)   // ramp to 90 (was 80)
                 _solenoids->setShiftPressure(telemetry.shift_pressure_pct + 1);
 
-            // FLARE DETECTION: if ratio climbs (engine running away) instead of
-            // dropping toward the next gear, the clutch is slipping = flare.
             if (telemetry.live_ratio > (_ratio_at_overlap_start + 0.15f)) {
                 telemetry.flare_detected = true;
             }
@@ -299,7 +385,7 @@ void ShiftScheduler::update() {
             break;
 
         case PHASE_INERTIA:
-            if (telemetry.shift_pressure_pct < 90)
+            if (telemetry.shift_pressure_pct < 100)   // ramp to 100 (was 90)
                 _solenoids->setShiftPressure(telemetry.shift_pressure_pct + 1);
             if (telemetry.live_ratio > (_ratio_at_overlap_start + 0.15f))
                 telemetry.flare_detected = true;
@@ -320,18 +406,25 @@ void ShiftScheduler::update() {
             break;
 
         case PHASE_DS_SYNC:
-            if (telemetry.live_ratio >= (target_ratio - 0.2f) || time_in_phase_ms > 400) {
+            // Wait until the engine has rev-matched to within 5% of the target gear
+            // ratio before the catch clutch applies. The old 0.2 threshold was
+            // satisfied immediately (current ratio already > target-0.2 on entry).
+            if (telemetry.live_ratio >= (target_ratio - 0.05f) || time_in_phase_ms > 400) {
                 _current_phase = PHASE_DS_CATCH; _phase_start_tick = current_tick;
             }
             break;
 
         case PHASE_DS_CATCH:
-            if (telemetry.shift_pressure_pct < (80 + _current_pressure_mod))
+            if (telemetry.shift_pressure_pct < (90 + _current_pressure_mod))
                 _solenoids->setShiftPressure(telemetry.shift_pressure_pct + 2);
-            // Bind on downshift = engagement so abrupt the output shaft jerks DOWN
             if (telemetry.output_rpm < (_output_rpm_at_shift_start - 30.0f))
                 telemetry.bind_detected = true;
-            if (telemetry.live_ratio >= (target_ratio - 0.05f) || time_in_phase_ms > 400) {
+            // DISTINCT exit from SYNC: tighter ratio tolerance (0.02 vs 0.05)
+            // AND minimum 40ms — ensures the pressure ramp has real duration before
+            // we declare the gear locked. Previously used target-0.05 (same as SYNC)
+            // which meant CATCH exited on its first tick, applying a single +2% step.
+            if ((telemetry.live_ratio >= (target_ratio - 0.02f) && time_in_phase_ms >= 40)
+                || time_in_phase_ms > 300) {
                 telemetry.last_shift_time_ms = millis() - _shift_stopwatch_start;
                 _solenoids->stopShiftSolenoid(_active_routing_pin);
                 _solenoids->setShiftPressure(0);

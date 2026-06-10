@@ -17,9 +17,12 @@
 #define NUM_LOAD_BINS 16
 #define NUM_RPM_BINS 16
 
-// Safe clamp range for stored modifiers (well inside int8_t to avoid wrap)
-#define MOD_MIN -60
-#define MOD_MAX  60
+// Pressure modifiers: applied to SPC% — tight range, small corrections only
+#define PRESSURE_MOD_MIN -30
+#define PRESSURE_MOD_MAX  60
+// Timing modifiers: applied to ms durations — wider range needed for large clutch volumes
+#define TIMING_MOD_MIN   -30
+#define TIMING_MOD_MAX   120  // allows up to 60+120=180ms prefill for K2
 
 class AdaptiveMemory {
   private:
@@ -33,7 +36,8 @@ class AdaptiveMemory {
     uint8_t getLoadBin(float tps_pct, float map_kpa);
     uint8_t getRpmBin(float engine_rpm);
     void loadUltimateNag52Defaults();
-    static int8_t clampMod(int v); // keeps stored values inside MOD_MIN..MOD_MAX
+    static int8_t clampPressure(int v);
+    static int8_t clampTiming(int v);
 
   public:
     AdaptiveMemory();

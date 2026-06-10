@@ -6,10 +6,11 @@
 
 AdaptiveMemory::AdaptiveMemory() {}
 
-int8_t AdaptiveMemory::clampMod(int v) {
-    if (v < MOD_MIN) v = MOD_MIN;
-    if (v > MOD_MAX) v = MOD_MAX;
-    return (int8_t)v;
+int8_t AdaptiveMemory::clampPressure(int v) {
+    return (int8_t)constrain(v, PRESSURE_MOD_MIN, PRESSURE_MOD_MAX);
+}
+int8_t AdaptiveMemory::clampTiming(int v) {
+    return (int8_t)constrain(v, TIMING_MOD_MIN, TIMING_MOD_MAX);
 }
 
 void AdaptiveMemory::begin() {
@@ -37,29 +38,36 @@ void AdaptiveMemory::loadUltimateNag52Defaults() {
 
     for (int l = 0; l < NUM_LOAD_BINS; l++) {
         for (int r = 0; r < NUM_RPM_BINS; r++) {
-            // UPSHIFT PREFILLS (base 60ms + mod)
-            prefill_modifiers[0][l][r] = -15; // 1->2 B1 small volume
-            prefill_modifiers[1][l][r] = -5;  // 2->3 K1 medium
-            prefill_modifiers[2][l][r] = 20;  // 3->4 K2 huge volume (anti-flare)
-            prefill_modifiers[3][l][r] = -15; // 4->5 B1
+            // UPSHIFT PREFILL TIMING  (base 60ms + mod = total fill time)
+            // Starting conservative (long) so early shifts are soft — adaptive tightens.
+            // Source: NAG52 empirical data + W5A330 clutch volume ratios.
+            prefill_modifiers[0][l][r] = clampTiming(30);  // 1->2 B1 brake:   60+30 = 90ms
+            prefill_modifiers[1][l][r] = clampTiming(50);  // 2->3 K1 clutch:  60+50 = 110ms
+            prefill_modifiers[2][l][r] = clampTiming(100); // 3->4 K2 clutch:  60+100= 160ms (largest drum, flare-prone)
+            prefill_modifiers[3][l][r] = clampTiming(20);  // 4->5 B1 brake:   60+20 = 80ms
 
-            // UPSHIFT OVERLAP PRESSURES (base + load scaling), clamped
-            int8_t load_pressure_add = clampMod(l * 3);
-            pressure_modifiers[0][l][r] = load_pressure_add;
-            pressure_modifiers[1][l][r] = load_pressure_add;
-            pressure_modifiers[2][l][r] = clampMod(load_pressure_add + 5); // K2 extra clamp
-            pressure_modifiers[3][l][r] = load_pressure_add;
+            // UPSHIFT OVERLAP PRESSURE  (base 45% SPC + load mod = initial overlap pressure)
+            // Performance bias: l*4 gives 0→60% across load bins (was l*3 = 0→45%).
+            // K2 gets +10% extra. Adaptive pulls back 2% per bind — start firm.
+            int8_t load_p = clampPressure(l * 4); // 0% at idle, 60% at full boost load
+            pressure_modifiers[0][l][r] = load_p;
+            pressure_modifiers[1][l][r] = load_p;
+            pressure_modifiers[2][l][r] = clampPressure(load_p + 10); // K2 extra
+            pressure_modifiers[3][l][r] = load_p;
 
-            // DOWNSHIFT REV-MATCH TIMING (base 80ms + mod)
-            ds_timing_modifiers[0][l][r] = 20;  // 2->1
-            ds_timing_modifiers[1][l][r] = 50;  // 3->2
-            ds_timing_modifiers[2][l][r] = clampMod(100); // 4->3
-            ds_timing_modifiers[3][l][r] = clampMod(150); // 5->4 (clamped to 60)
+            // DOWNSHIFT RELEASE TIMING  (base 80ms + mod = engine rev-match window)
+            // Longer for higher gears: larger ratio delta needs more time for engine
+            // inertia to close the gap before the catch clutch applies.
+            ds_timing_modifiers[0][l][r] = clampTiming(20);  // 2->1:  80+20 = 100ms
+            ds_timing_modifiers[1][l][r] = clampTiming(50);  // 3->2:  80+50 = 130ms
+            ds_timing_modifiers[2][l][r] = clampTiming(100); // 4->3:  80+100= 180ms
+            ds_timing_modifiers[3][l][r] = clampTiming(120); // 5->4:  80+120= 200ms
 
-            ds_pressure_modifiers[0][l][r] = load_pressure_add;
-            ds_pressure_modifiers[1][l][r] = load_pressure_add;
-            ds_pressure_modifiers[2][l][r] = load_pressure_add;
-            ds_pressure_modifiers[3][l][r] = load_pressure_add;
+            // DOWNSHIFT CATCH PRESSURE  (same performance-biased load scaling)
+            ds_pressure_modifiers[0][l][r] = load_p;
+            ds_pressure_modifiers[1][l][r] = load_p;
+            ds_pressure_modifiers[2][l][r] = clampPressure(load_p + 5); // 4->3 extra
+            ds_pressure_modifiers[3][l][r] = clampPressure(load_p + 5); // 5->4 extra
         }
     }
 
@@ -95,15 +103,12 @@ void AdaptiveMemory::evaluateShift(bool is_upshift, uint8_t shift_idx, float tps
     uint8_t r = getRpmBin(engine_rpm);
 
     if (is_upshift) {
-        // Flare = clutch slipping too long -> raise pressure. Bind = too harsh -> lower.
-        if (flare)      pressure_modifiers[shift_idx][l][r] = clampMod(pressure_modifiers[shift_idx][l][r] + 2);
-        else if (bind)  pressure_modifiers[shift_idx][l][r] = clampMod(pressure_modifiers[shift_idx][l][r] - 2);
+        if (flare)     pressure_modifiers[shift_idx][l][r] = clampPressure(pressure_modifiers[shift_idx][l][r] + 2);
+        else if (bind) pressure_modifiers[shift_idx][l][r] = clampPressure(pressure_modifiers[shift_idx][l][r] - 2);
         saveTable(true, shift_idx, true);
     } else {
-        // Downshift: flare (overshoot before catch) -> raise catch pressure.
-        // bind (engagement too abrupt) -> lengthen sync time.
-        if (flare)      ds_pressure_modifiers[shift_idx][l][r] = clampMod(ds_pressure_modifiers[shift_idx][l][r] + 2);
-        else if (bind)  ds_timing_modifiers[shift_idx][l][r]   = clampMod(ds_timing_modifiers[shift_idx][l][r] + 5);
+        if (flare)     ds_pressure_modifiers[shift_idx][l][r] = clampPressure(ds_pressure_modifiers[shift_idx][l][r] + 2);
+        else if (bind) ds_timing_modifiers[shift_idx][l][r]   = clampTiming(ds_timing_modifiers[shift_idx][l][r] + 5);
         saveTable(false, shift_idx, true);
         saveTable(false, shift_idx, false);
     }

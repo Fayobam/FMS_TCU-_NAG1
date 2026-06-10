@@ -12,7 +12,7 @@
 const float TEETH_N2 = 60.0f;          // OEM 722.6 Internal N2 Drum
 const float TEETH_N3 = 60.0f;          // OEM 722.6 Internal N3 Drum
 const float TEETH_OUT = 24.0f;         // Custom External Output Shaft Sensor
-const float PULSES_PER_REV_ENG = 3.0f; // Engine Tach Signal (e.g., 3 for V6, 2 for I4)
+const float PULSES_PER_REV_ENG = 60.0f; // 60-tooth crank reluctor wheel (M111)
 
 class SpeedReader {
   private:
@@ -35,12 +35,11 @@ class SpeedReader {
 
     // Helper functions
     void initPCNT(pcnt_unit_handle_t* unit_handle, uint8_t pin);
-    float calculateTurbineRPM(float n2_rpm, float n3_rpm, uint8_t current_gear);
+    float calculateTurbineRPM(float n2_rpm, float n3_rpm);
 
   public:
     SpeedReader(uint8_t pin_n2, uint8_t pin_n3, uint8_t pin_out, uint8_t pin_eng);
     void begin();
     
-    // Pass the current gear into the update loop for N2/N3 math
-    void update(uint8_t current_gear); 
+    void update();
 };
