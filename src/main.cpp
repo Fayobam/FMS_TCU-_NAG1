@@ -19,7 +19,7 @@
 // ============================================================================
 TCU_Telemetry telemetry;
 
-SolenoidDriver solenoids(PIN_MPC, PIN_SPC, PIN_TCC, PIN_Y3, PIN_Y4, PIN_Y5);
+SolenoidDriver solenoids(PIN_MPC, PIN_SPC, PIN_TCC, PIN_Y3, PIN_Y4, PIN_Y5, PIN_RP_LOCK);
 SpeedReader speedReader(PIN_N2_SPEED, PIN_N3_SPEED, PIN_OUT_SPEED, PIN_ENG_SPEED);
 InputManager inputManager(PIN_ATF_TEMP, PIN_TPS, PIN_MAP);   // <-- now gets load pins
 AdaptiveMemory adaptives;

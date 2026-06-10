@@ -19,6 +19,8 @@ const uint8_t PIN_Y3  = 14; // Solenoid 1-2 / 4-5
 const uint8_t PIN_Y5  = 19; // Solenoid 2-3
 const uint8_t PIN_Y4  = 18; // Solenoid 3-4
 const uint8_t PIN_TCC = 27; // Torque Converter Clutch
+const uint8_t PIN_RP_LOCK = 13; // Reverse/Park interlock solenoid — digital out (GPIO13,
+                                // ADC2 so useless for analog anyway; NOT a strapping pin)
 
 const uint8_t PIN_TPS      = 36; // Throttle Position Sensor    ADC1_CH0
 const uint8_t PIN_MAP      = 33; // Manifold Absolute Pressure  ADC1_CH5  <-- REWIRED from 23 (23 has no ADC)
@@ -76,6 +78,21 @@ const float TPS_LUG_LOAD_PCT         = 25.0f;   // Lug protection only active ab
 const float RPM_MAX_SAFE_DOWNSHIFT   = 6000.0f; // Money-shift guard ceiling for downshifts
 const unsigned long AUTO_SHIFT_COOLDOWN_MS = 500; // Min gap between auto-safety shifts
 
+// --- Selector-abuse protection (N->D at speed, R while moving) ---
+// Output-shaft RPM that counts as "moving". ~150 rpm ≈ 5 km/h with a typical
+// 3.5 final drive + 2 m tyre. Below this the car is treated as stopped, so
+// reverse / park selection is permitted normally.
+const float OUTPUT_RPM_MOVING         = 150.0f;
+const float REVERSE_INHIBIT_SPEED_RPM = 150.0f; // above this, R is inhibited / pressure dumped
+const uint8_t REVERSE_ABUSE_LINE_PCT  = 15;     // line% if R is forced while moving (slip, not shock)
+const uint32_t ENGAGE_GRACE_MS        = 1500;   // suppress slip-limp during D-engagement clutch sync
+
+// RP_LOCK shift-lock solenoid — VERIFY POLARITY ON YOUR SHIFTER before trusting it.
+// Fail-safe by design: at boot/reset the pin is LOW = lever released, so a dead
+// ESP32 never traps the driver. Engaged only while moving, to block R/P selection.
+const bool RP_LOCK_ACTIVE_HIGH = true;  // true: drive HIGH to ENGAGE the lock
+const bool ENABLE_RP_LOCK      = true;  // false: never drive the pin (no lock hardware fitted)
+
 // MAP sensor calibration (adjust to YOUR sensor's transfer function)
 // Example: 3-bar GM-style sensor, 0.5V=20kPa, 4.5V=304kPa, scaled to 3.3V ADC
 const float MAP_KPA_AT_0V   = -10.0f;
@@ -128,6 +145,7 @@ struct TCU_Telemetry {
     // --- Auto-safety bookkeeping ---
     unsigned long last_auto_shift_ms = 0;
     String last_safety_event = "";
+    bool reverse_abuse_active = false;   // R selected while moving forward — pressure dumped
 
     // --- Selector sensing (SEPARATED to fix the fighting-writer bug) ---
     bool pn_switch_raw  = true;   // Raw multiplexed P/N switch reading (InputManager owns this)

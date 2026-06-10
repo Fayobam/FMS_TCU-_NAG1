@@ -5,8 +5,8 @@
 #include "SolenoidDriver.h"
 #include "TCU_Data.h"   // needed for telemetry feedback writes
 
-SolenoidDriver::SolenoidDriver(uint8_t mpc, uint8_t spc, uint8_t tcc, uint8_t y3, uint8_t y4, uint8_t y5) {
-    _mpc = mpc; _spc = spc; _tcc = tcc;
+SolenoidDriver::SolenoidDriver(uint8_t mpc, uint8_t spc, uint8_t tcc, uint8_t y3, uint8_t y4, uint8_t y5, uint8_t rp_lock) {
+    _mpc = mpc; _spc = spc; _tcc = tcc; _rp_lock = rp_lock;
     _y3.pin = y3; _y3.state = STATE_OFF;
     _y4.pin = y4; _y4.state = STATE_OFF;
     _y5.pin = y5; _y5.state = STATE_OFF;
@@ -19,6 +19,10 @@ void SolenoidDriver::begin() {
     ledcAttach(_y3.pin, 1000, 8);
     ledcAttach(_y4.pin, 1000, 8);
     ledcAttach(_y5.pin, 1000, 8);
+
+    // RP_LOCK is a simple on/off solenoid, not PWM — plain digital output.
+    pinMode(_rp_lock, OUTPUT);
+    setShiftLock(false);            // boot released = lever free (fail-safe)
 
     setLinePressure(0);
     setShiftPressure(0);
@@ -95,4 +99,13 @@ void SolenoidDriver::setTCC(uint8_t pct) {
     pct = constrain(pct, 0, 100);
     ledcWrite(_tcc, map(pct, 0, 100, 0, 255));  // normal logic
     telemetry.tcc_lockup_pct = pct;
+}
+
+// Reverse/Park interlock. engaged=true blocks the lever from leaving the forward
+// range (i.e. entering N/R/P). Feature- and polarity-gated in TCU_Data.h because
+// the mechanism is shifter-specific — verify before relying on it.
+void SolenoidDriver::setShiftLock(bool engaged) {
+    if (!ENABLE_RP_LOCK) engaged = false;             // no lock hardware → always released
+    bool pin_high = RP_LOCK_ACTIVE_HIGH ? engaged : !engaged;
+    digitalWrite(_rp_lock, pin_high ? HIGH : LOW);
 }

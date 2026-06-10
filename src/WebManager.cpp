@@ -114,6 +114,7 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["atfTemp"]   = telemetry.atf_temp_c;
     doc["htMode"]    = telemetry.high_torque_mode;
     doc["phase"]     = telemetry.shift_phase;
+    doc["revAbuse"]  = telemetry.reverse_abuse_active;
 
     char buffer[1024];
     size_t len = serializeJson(doc, buffer, sizeof(buffer));

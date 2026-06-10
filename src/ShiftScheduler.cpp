@@ -23,6 +23,12 @@ void ShiftScheduler::begin() {
     _prev_tps = 0.0f;
     _high_torque_mode = false;
     _ht_release_start_ms = 0;
+    _engage_grace_until_ms = 0;
+}
+
+bool ShiftScheduler::isForwardRange() {
+    char s = telemetry.prnd_state;
+    return (s == 'D' || s == '4' || s == '3' || s == '2' || s == '1');
 }
 
 // ----------------------------------------------------------------------------
@@ -208,6 +214,16 @@ void ShiftScheduler::checkSafetyShifts() {
 // LIMP MODE  (load-aware threshold + deliberate reset path)
 // ----------------------------------------------------------------------------
 void ShiftScheduler::checkLimpMode(float target_ratio) {
+    // Engagement grace: after selecting D (especially N->D while moving) the
+    // oncoming clutch slips for several hundred ms while it drags the turbine up
+    // to output*ratio. That transient is NOT a fault — suppress slip detection
+    // until the clutch has had time to synchronise. (Bug: N->D at speed tripped
+    // instant limp mode on the engagement transient.)
+    if (millis() < _engage_grace_until_ms) {
+        telemetry.is_slipping = false;
+        return;
+    }
+
     // Slip detection only while cruising, in D, moving, and NOT at high load
     // (high-boost launches legitimately slip the converter and chirp tyres).
     bool conditions = (_current_phase == PHASE_CRUISING &&
@@ -289,6 +305,36 @@ void ShiftScheduler::checkTpsROC() {
 }
 
 // ============================================================================
+// REVERSE / PARK INTERLOCK
+// Layer 1 (preventive): drive the RP_LOCK solenoid to physically block the lever
+//   from leaving the forward range whenever the car is moving. Fail-safe — a dead
+//   ESP32 leaves the lever free.
+// Layer 2 (reactive failsafe): if R is somehow engaged while still rolling forward
+//   (lock not fitted / failed / lever forced), the manual valve has mechanically
+//   routed oil to the reverse brake B3 and we cannot stop that. What we CAN do is
+//   collapse line pressure so B3 slips and heats instead of shock-loading the
+//   driveline, unlock the converter, and warn. Auto-clears once stopped.
+// Returns true when the failsafe owns the outputs (caller must skip normal logic).
+// ============================================================================
+bool ShiftScheduler::checkReverseInhibit() {
+    bool moving = telemetry.output_rpm > OUTPUT_RPM_MOVING;
+    _solenoids->setShiftLock(moving);    // Layer 1 — always maintained
+
+    if (telemetry.prnd_state == 'R' && telemetry.output_rpm > REVERSE_INHIBIT_SPEED_RPM) {
+        _solenoids->stopAllShiftSolenoids();
+        _solenoids->setShiftPressure(0);
+        _solenoids->setTCC(0);                               // don't transmit rigidly
+        _solenoids->setLinePressure(REVERSE_ABUSE_LINE_PCT); // bleed clamp: slip, not shock
+        _current_phase = PHASE_CRUISING;
+        telemetry.reverse_abuse_active = true;
+        telemetry.last_safety_event = "REVERSE@SPEED: line pressure dumped (protect B3)";
+        return true;
+    }
+    telemetry.reverse_abuse_active = false;
+    return false;
+}
+
+// ============================================================================
 // MAIN UPDATE (called every 1ms from core 1)
 // ============================================================================
 void ShiftScheduler::update() {
@@ -316,13 +362,31 @@ void ShiftScheduler::update() {
 
     checkTpsROC();
     telemetry.shift_phase = (uint8_t)_current_phase;
-    calculateLinePressure();
     calculateLiveRatio();
 
     TickType_t current_tick = xTaskGetTickCount();
     unsigned long time_in_phase_ms = (current_tick - _phase_start_tick) * portTICK_PERIOD_MS;
     float target_ratio = getTargetRatio(telemetry.target_gear);
 
+    // ---- ABORT a shift if the selector left the forward range mid-shift ----
+    // Knocking the lever to N/R/P during a shift hydraulically releases the
+    // clutches via the manual valve. Finish the firmware shift cleanly so we
+    // never leave a routing solenoid energised, nor hang forever in OVERLAP
+    // waiting on a ratio change that can no longer happen.
+    bool in_active_shift = (_current_phase != PHASE_CRUISING && _current_phase != PHASE_COMPLETION);
+    if (in_active_shift && !isForwardRange()) {
+        _solenoids->stopAllShiftSolenoids();
+        _solenoids->setShiftPressure(0);
+        telemetry.current_gear = 2;        // manual valve default
+        telemetry.target_gear  = 2;
+        _current_phase = PHASE_CRUISING;
+        telemetry.last_safety_event = "SHIFT ABORTED (selector left drive)";
+    }
+
+    // ---- Reverse/Park interlock + R-while-moving failsafe ----
+    if (checkReverseInhibit()) return;     // failsafe owns the outputs this loop
+
+    calculateLinePressure();
     checkLimpMode(target_ratio);
     checkSafetyShifts();   // <-- auto overrev/lug protection runs every loop
 
@@ -341,6 +405,10 @@ void ShiftScheduler::update() {
                 telemetry.drive_engaged = true;
                 telemetry.current_gear  = 2;
                 telemetry.target_gear   = 2;
+                // Start the engagement-sync grace window. If this was an N->D while
+                // moving, the 2nd-gear clutch will slip for a few hundred ms dragging
+                // the turbine up to speed — don't let that transient trip limp mode.
+                _engage_grace_until_ms = millis() + ENGAGE_GRACE_MS;
             }
 
             // Returning to P/N: re-arm edge detector.
@@ -349,16 +417,16 @@ void ShiftScheduler::update() {
                 _prev_pn_raw = true;
             }
 
-            // MANUAL UPSHIFT
+            // MANUAL UPSHIFT — only honour paddles in a forward range (ignore in P/R/N).
             if (telemetry.paddle_up_request) {
                 telemetry.paddle_up_request = false;
-                if (telemetry.current_gear < 5)
+                if (isForwardRange() && telemetry.current_gear < 5)
                     beginShift(telemetry.current_gear + 1, true, "PADDLE");
             }
             // MANUAL DOWNSHIFT (guard inside beginShift)
             if (telemetry.paddle_down_request) {
                 telemetry.paddle_down_request = false;
-                if (telemetry.current_gear > 1)
+                if (isForwardRange() && telemetry.current_gear > 1)
                     beginShift(telemetry.current_gear - 1, false, "PADDLE");
             }
             break;
@@ -381,7 +449,11 @@ void ShiftScheduler::update() {
             if (telemetry.live_ratio > (_ratio_at_overlap_start + 0.15f)) {
                 telemetry.flare_detected = true;
             }
-            if (telemetry.live_ratio < (getTargetRatio(telemetry.current_gear) - 0.1f)) {
+            // Progress on ratio drop, OR bail out after 800ms so a noisy/absent
+            // ratio signal can never hang OVERLAP forever — INERTIA then applies
+            // its own 600ms completion timeout as the final backstop.
+            if (telemetry.live_ratio < (getTargetRatio(telemetry.current_gear) - 0.1f)
+                || time_in_phase_ms > 800) {
                 _current_phase = PHASE_INERTIA; _phase_start_tick = current_tick;
             }
             break;

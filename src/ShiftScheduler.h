@@ -43,6 +43,7 @@ class ShiftScheduler {
     float _output_rpm_at_shift_start;
     float _ratio_at_overlap_start;  // for flare detection
     bool  _prev_pn_raw;             // edge-detect for garage shift trigger
+    unsigned long _engage_grace_until_ms; // suppress slip-limp during D-engagement sync
 
     // TPS rate-of-change torque anticipation
     float         _prev_tps;
@@ -65,6 +66,8 @@ class ShiftScheduler {
     void checkSafetyShifts();
     void checkLimpMode(float target_ratio);
     void checkTpsROC();                       // TPS rate-of-change torque anticipation
+    bool checkReverseInhibit();               // RP_LOCK + R-while-moving failsafe (returns true if it owns outputs)
+    bool isForwardRange();                    // prnd is one of D/4/3/2/1
     bool beginShift(uint8_t target_gear, bool is_upshift, const char* source);
     float getTargetRatio(uint8_t gear);
     uint8_t getRoutingSolenoidForShift(uint8_t from_gear, uint8_t to_gear);

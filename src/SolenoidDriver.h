@@ -24,6 +24,7 @@ class SolenoidDriver {
     uint8_t _mpc;
     uint8_t _spc;
     uint8_t _tcc;
+    uint8_t _rp_lock;       // Reverse/Park interlock solenoid (plain digital output)
 
     RoutingSolenoid _y3; // 1-2 / 4-5 Shift Valve
     RoutingSolenoid _y4; // 3-4 Shift Valve
@@ -32,7 +33,7 @@ class SolenoidDriver {
     void processRoutingSolenoid(RoutingSolenoid &sol);
 
   public:
-    SolenoidDriver(uint8_t mpc, uint8_t spc, uint8_t tcc, uint8_t y3, uint8_t y4, uint8_t y5);
+    SolenoidDriver(uint8_t mpc, uint8_t spc, uint8_t tcc, uint8_t y3, uint8_t y4, uint8_t y5, uint8_t rp_lock);
 
     void begin();
     void update();
@@ -44,6 +45,8 @@ class SolenoidDriver {
     void fireShiftSolenoid(uint8_t pin);
     void stopShiftSolenoid(uint8_t pin);
     void stopAllShiftSolenoids();
+
+    void setShiftLock(bool engaged);   // RP_LOCK: block lever travel into R/P while moving
 
     void startGarageShiftJiggle();
     void stopGarageShiftJiggle();
