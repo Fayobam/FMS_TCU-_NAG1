@@ -14,15 +14,19 @@
 #include "SolenoidDriver.h"
 #include "AdaptiveMemory.h"
 
+// Generic phase set shared by all four shift classes (ATSG-grounded spec §4).
+// Upshift path:   PREP → FILL → TORQUE → INERTIA → LOCK → END
+// Downshift path: PREP → RELEASE → CATCH → LOCK → END  (PD_SPRAG skips LOCK timing-wise)
 enum ShiftPhase {
     PHASE_CRUISING,
-    PHASE_PREFILL,
-    PHASE_OVERLAP,
-    PHASE_INERTIA,
-    PHASE_DS_RELEASE,
-    PHASE_DS_SYNC,
-    PHASE_DS_CATCH,
-    PHASE_COMPLETION
+    PHASE_PREP,
+    PHASE_FILL,       // upshift: stroke oncoming piston (ratio must not move)
+    PHASE_TORQUE,     // upshift: oncoming takes torque while off-going releases via overlap
+    PHASE_INERTIA,    // upshift: ramp clutch, pull ratio to target
+    PHASE_RELEASE,    // downshift: off-going exhausts, engine flares turbine toward sync
+    PHASE_CATCH,      // downshift: clamp oncoming as sync approaches (sprag = secure brake)
+    PHASE_LOCK,       // both: seat the clutch at full apply
+    PHASE_END         // both: decay line to cruise, adapt, latch
 };
 
 class ShiftScheduler {
@@ -34,23 +38,44 @@ class ShiftScheduler {
     TickType_t _phase_start_tick;
     uint8_t _active_routing_pin;
     bool _is_upshift;
-    uint8_t _active_shift_idx;      // adaptive table index for THIS shift
+    uint8_t _active_shift_idx;      // adaptive table index for THIS shift (upshift idx / target-1)
 
-    int8_t _current_pressure_mod;
-    int8_t _current_timing_mod;
+    // --- Active shift classification & profile (computed at beginShift) ---
+    ShiftClass    _sclass;
+    PowerDownType _pd_type;
+    bool          _prev_was_power;  // class hysteresis between the POWER/COAST thresholds
+    uint8_t  _from_gear;
+    float    _load_at_start;        // load_pct (0-100, torque-based) captured at initiation
+    uint8_t  _torque_bin;           // 4-wide torque bin captured at initiation (adaptation key)
+    float    _ratio_old;            // source-gear ratio
+    float    _ratio_target;         // target-gear ratio
+    // profile scalars (filled by classifyAndProfile)
+    uint8_t  _fill_p;  uint16_t _fill_t_ms;
+    uint8_t  _apply_pct;
+    float    _inertia_slope;  uint16_t _inertia_target_ms;
+    uint8_t  _release_spc;  uint16_t _release_backstop_ms;
+    uint8_t  _catch_start_spc;  float _catch_slope;
+
+    // --- 20ms pressure-update quantizer (ATSG p.80) ---
+    unsigned long _last_pressure_update_ms;
+    float    _spc_cmd;              // fractional SPC accumulator so ramps are smooth across 20ms ticks
+
+    // --- Detection state ---
     unsigned long _shift_stopwatch_start;
-    float _turbine_rpm_at_shift_start;
-    float _output_rpm_at_shift_start;
-    float _ratio_at_overlap_start;  // for flare detection
-    float _output_rpm_at_catch_start;   // DS_CATCH bind metric: isolate clutch decel from braking
+    float    _turbine_rpm_at_shift_start;
+    float    _output_rpm_at_shift_start;
+    float    _flare_peak_ratio;        // highest ratio seen during torque/inertia (flare)
+    float    _prev_ratio;              // for dRatio/dt collapse (sprag catch detection)
+    unsigned long _sync_stable_since_ms; // when ratio first parked at target (sprag/timed catch)
+    float    _output_rpm_at_catch_start; // coast-down decel-delta metric baseline
     unsigned long _catch_start_ms;
-    float _ds_baseline_decel_rate;      // output rpm/ms decel measured BEFORE catch (vehicle/braking)
+    float    _ds_baseline_decel_rate;
+    bool     _harsh_detected;          // upshift inertia too short / decel spike
+
     bool  _prev_pn_raw;             // edge-detect for garage shift trigger
     unsigned long _engage_grace_until_ms; // suppress slip-limp during D-engagement sync
     char  _prev_prnd;              // edge-detect for reverse selection
     bool  _legit_reverse;         // R was selected while stopped → genuine reverse, allow any speed
-    uint8_t _shift_load_bin;      // load/RPM bins captured at shift INITIATION (so adaptive
-    uint8_t _shift_rpm_bin;       // learning writes the cell that actually caused the event)
 
     // TPS rate-of-change torque anticipation
     float         _prev_tps;
@@ -67,7 +92,8 @@ class ShiftScheduler {
         { 38, 45, 55, 65, 78, 90, 98, 100, 100, 100, 100, 100, 100, 100, 100, 100 } // G5
     };
 
-    void calculateLinePressure();
+    void calculateLinePressure();             // CRUISING line pressure (holding map + ATF)
+    float cruiseLinePressure();               // the cruise MPC value, for max(cruise, …) during shifts
     void calculateLiveRatio();
     void updateTCC();
     void checkSafetyShifts();
@@ -77,6 +103,13 @@ class ShiftScheduler {
     bool isForwardRange();                    // prnd is one of D/4/3/2/1
     void updateStandbyAndGarage();            // SPC/MPC standby duties + Y4 garage window (not shifting)
     bool beginShift(uint8_t target_gear, bool is_upshift, const char* source);
+    void classifyAndProfile(uint8_t from, uint8_t to, bool is_upshift);  // class + profile scalars
+    void runShiftPhases(unsigned long t_ms, bool ptick);  // the class-aware phase engine
+    void setSPC(float pct);                   // write _spc_cmd + command solenoid
+    void applyShiftMPC();                     // MPC rule during a shift (per class/load)
+    void finishShift();                       // latch gear, schedule END decay, adapt
+    void evaluateAdaptation();                // class-indexed learning (Phase 5)
+    uint8_t classGearFromRatio();             // nearest-ratio gear classifier (limp/abort)
     float getTargetRatio(uint8_t gear);
     uint8_t getRoutingSolenoidForShift(uint8_t from_gear, uint8_t to_gear);
 

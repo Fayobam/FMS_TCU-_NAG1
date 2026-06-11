@@ -160,6 +160,15 @@ const float CLASS_COAST_TPS_PCT  = 5.0f;    // COAST if tps < 5%; between = keep
 const float ADAPT_ATF_MIN_C = 60.0f;
 const float ADAPT_ATF_MAX_C = 105.0f;
 
+// --- Upshift fill calibration (spec §5), indexed by upshift idx ---
+//   0 = 1-2 (K1), 1 = 2-3 (K2), 2 = 3-4 (K3 big drum), 3 = 4-5 (B1).
+// Pressure-% (SPC during fill) and base fill time (ms). Clutch volumes differ.
+const uint8_t  FILL_P_PCT[4] = {  80,  82,  88,  78 };
+const uint16_t FILL_T_MS[4]  = { 140, 150, 180, 130 };
+
+// 20ms pressure-update quantization (ATSG p.80: ETC changes amplitude once per 20ms).
+const uint16_t PRESSURE_TICK_MS = 20;
+
 // ============================================================================
 // 4. TELEMETRY DATA STRUCTURE (V9.0)
 // ============================================================================
