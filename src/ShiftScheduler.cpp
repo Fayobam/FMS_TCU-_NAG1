@@ -147,7 +147,7 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     telemetry.target_gear = target_gear;
     _is_upshift = is_upshift;
     // Adaptive index: upshift uses lower gear-1, downshift uses target gear-1
-    _active_shift_idx = constrain(is_upshift ? (_from_gear - 1) : (target_gear - 1), 0, NUM_UPSHIFTS - 1);
+    _active_shift_idx = constrain(is_upshift ? (_from_gear - 1) : (target_gear - 1), 0, ADAPT_SHIFTS - 1);
 
     // Capture the operating cell NOW, at initiation (torque-binned). Adaptation runs
     // in END — by then RPM/torque have moved, so binning there would mis-attribute.
@@ -224,6 +224,17 @@ void ShiftScheduler::classifyAndProfile(uint8_t from, uint8_t to, bool is_upshif
             _release_spc = 15; _release_backstop_ms = 80;             // coast: no sync wait
             _catch_start_spc = 15; _catch_slope = 1.0f;
         }
+    }
+
+    // Apply learned trims for this cell (Adaptation v2). Zero on blank flash.
+    AdaptCell cell = _adaptives->getCell((uint8_t)_sclass, idx, _torque_bin);
+    if (is_upshift) {
+        _fill_p    = (uint8_t)constrain((int)_fill_p + cell.fill_p_trim, 0, 100);
+        _fill_t_ms = (uint16_t)constrain((int)_fill_t_ms + cell.fill_t_cycles * 20, 0, 400);
+        _apply_pct = (uint8_t)constrain((int)_apply_pct + cell.apply_trim, 0, 100);
+    } else {
+        _catch_start_spc     = (uint8_t)constrain((int)_catch_start_spc + cell.apply_trim, 0, 100);
+        _release_backstop_ms = (uint16_t)constrain((int)_release_backstop_ms + cell.fill_t_cycles * 20, 40, 600);
     }
 
     telemetry.shift_class = (uint8_t)_sclass;
@@ -520,6 +531,7 @@ void ShiftScheduler::update() {
             _engage_grace_until_ms = millis() + ENGAGE_GRACE_MS;
         }
         if (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N') {
+            if (telemetry.drive_engaged) _adaptives->requestFlush();  // persist learning at the stop
             telemetry.drive_engaged = false;
             _prev_pn_raw = true;
         }
@@ -693,8 +705,10 @@ uint8_t ShiftScheduler::classGearFromRatio() {
     return best;
 }
 
-// Class-indexed adaptation — implemented in Phase 5 (Adaptation v2).
+// Class-indexed adaptation (Adaptation v2). One update per shift, ATF-gated.
 void ShiftScheduler::evaluateAdaptation() {
-    // TODO(Phase 5): write AdaptCell[class][shift_idx][torque_bin] from flare/_harsh/
-    // bind with ATF gating. Baseline profiles run un-trimmed until then.
+    // ATSG p.78: only relearn in the valid ATF window (and never in limp).
+    if (telemetry.atf_temp_c < ADAPT_ATF_MIN_C || telemetry.atf_temp_c > ADAPT_ATF_MAX_C) return;
+    _adaptives->learn((uint8_t)_sclass, _active_shift_idx, _torque_bin,
+                      telemetry.flare_detected, _harsh_detected, telemetry.bind_detected);
 }

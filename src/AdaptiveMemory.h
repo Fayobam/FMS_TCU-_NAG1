@@ -1,69 +1,69 @@
 // ============================================================================
 // FILE: AdaptiveMemory.h
-// VERSION: 6.0
-// UPDATES:
-//   - Uses shared computeLoad/loadToBin from TCU_Data.h (one load model).
-//   - Stored modifiers clamped to a safe range to prevent int8_t wrap.
-//   - evaluateShift now takes explicit shift_idx + is_upshift (no off-by-one
-//     guessing from gear arithmetic).
+// VERSION: 7.0  (Adaptation v2 — class-indexed, torque-binned; ATSG spec §6)
+// Replaces the 16×16 up/down tables with OEM-style adaptation categories:
+//   AdaptCell[ShiftClass(4)][shift_idx(4)][torque_bin(4)]
+// Each cell trims the phase profile: fill time (in 20ms cycles), fill pressure %,
+// and torque-phase/catch apply %. Bins are captured at beginShift(); writes are
+// gated on ATF temp and flushed on a 60s timer or on entry to P/N (not per shift).
 // ============================================================================
 #pragma once
 #include <Arduino.h>
 #include <Preferences.h>
 #include "TCU_Data.h"
 
-#define NUM_UPSHIFTS 4
-#define NUM_DOWNSHIFTS 4
-#define NUM_LOAD_BINS 16
-#define NUM_RPM_BINS 16
+#define ADAPT_CLASSES 4   // ShiftClass: POWER_UP, COAST_UP, POWER_DOWN, COAST_DOWN
+#define ADAPT_SHIFTS  4   // shift_idx 0-3 (1-2/2-3/3-4/4-5 up; 2-1/3-2/4-3/5-4 down)
+#define ADAPT_TBINS   4   // torque bin 0-25 / 25-50 / 50-75 / 75-100 % of T_MAX
 
-// Pressure modifiers: applied to SPC% — tight range, small corrections only
-#define PRESSURE_MOD_MIN -30
-#define PRESSURE_MOD_MAX  60
-// Timing modifiers: applied to ms durations — wider range needed for large clutch volumes
-#define TIMING_MOD_MIN   -30
-#define TIMING_MOD_MAX   120  // allows up to 60+120=180ms prefill for K2
+// Per-field clamps (spec §6)
+#define FILL_T_CYC_MIN  (-5)
+#define FILL_T_CYC_MAX  ( 5)   // ×20ms → ±100ms
+#define FILL_P_TRIM_MIN (-15)
+#define FILL_P_TRIM_MAX ( 15)
+#define APPLY_TRIM_MIN  (-15)
+#define APPLY_TRIM_MAX  ( 15)
+
+struct AdaptCell {
+    int8_t fill_t_cycles;   // ±5  (×20ms)
+    int8_t fill_p_trim;     // ±15 (%)
+    int8_t apply_trim;      // ±15 (%)  (torque-phase apply on up; catch on down)
+};
 
 class AdaptiveMemory {
   private:
     Preferences preferences;
+    AdaptCell _cells[ADAPT_CLASSES][ADAPT_SHIFTS][ADAPT_TBINS];
 
-    int8_t pressure_modifiers[NUM_UPSHIFTS][NUM_LOAD_BINS][NUM_RPM_BINS];
-    int8_t prefill_modifiers[NUM_UPSHIFTS][NUM_LOAD_BINS][NUM_RPM_BINS];
-    int8_t ds_pressure_modifiers[NUM_DOWNSHIFTS][NUM_LOAD_BINS][NUM_RPM_BINS];
-    int8_t ds_timing_modifiers[NUM_DOWNSHIFTS][NUM_LOAD_BINS][NUM_RPM_BINS];
+    volatile uint8_t _dirty = 0;                 // one bit per ShiftClass
+    volatile bool    _flush_now = false;         // forced flush (e.g. on P/N entry)
+    portMUX_TYPE     _dirtyMux = portMUX_INITIALIZER_UNLOCKED;
+    unsigned long    _last_flush_ms = 0;
 
-    void loadUltimateNag52Defaults();
-    static int8_t clampPressure(int v);
-    static int8_t clampTiming(int v);
+    void loadDefaults();
+    void saveClass(uint8_t sclass);
 
-    // Bit encoding: (is_upshift?0:8) + (is_pressure?0:4) + shift_idx (0-3)
-    // Bits 0-3: upshift pressure, 4-7: upshift prefill, 8-11: ds pressure, 12-15: ds timing
-    volatile uint16_t _dirty_mask = 0;
-    // Guards _dirty_mask: Core 1 (evaluateShift) sets bits, Core 0 (processDirtyTables)
-    // clears them. The |= / &=~ read-modify-writes are not atomic without this.
-    portMUX_TYPE _dirtyMux = portMUX_INITIALIZER_UNLOCKED;
+    static int8_t clampFillT(int v) { return (int8_t)constrain(v, FILL_T_CYC_MIN, FILL_T_CYC_MAX); }
+    static int8_t clampFillP(int v) { return (int8_t)constrain(v, FILL_P_TRIM_MIN, FILL_P_TRIM_MAX); }
+    static int8_t clampApply(int v) { return (int8_t)constrain(v, APPLY_TRIM_MIN, APPLY_TRIM_MAX); }
 
   public:
     AdaptiveMemory();
     void begin();
 
-    // Public: ShiftScheduler captures the operating cell at shift INITIATION via these.
-    uint8_t getLoadBin(float tps_pct, float map_kpa);
-    uint8_t getRpmBin(float engine_rpm);
+    // Read the trims for a cell (called at beginShift). Safe for out-of-range args.
+    AdaptCell getCell(uint8_t sclass, uint8_t shift_idx, uint8_t tbin);
 
-    int8_t getModifier(bool is_upshift, uint8_t shift_idx, bool is_pressure, float tps, float map_kpa, float rpm);
+    // Apply one learning update for a completed shift. Deadband: clean shifts write
+    // nothing. ATF gating is the caller's responsibility (it owns telemetry).
+    void learn(uint8_t sclass, uint8_t shift_idx, uint8_t tbin, bool flare, bool harsh, bool bind);
 
-    // Explicit shift_idx + direction + the load/RPM bin captured at initiation.
-    // flare/bind passed directly; shift_time_ms drives the upshift harshness proxy.
-    // Sets dirty bits — does NOT write NVS. Call processDirtyTables() from Core 0.
-    void evaluateShift(bool is_upshift, uint8_t shift_idx, uint8_t load_bin, uint8_t rpm_bin,
-                       unsigned long shift_time_ms, bool flare, bool bind);
+    // Persistence (Core 0 only): flush dirty classes on the 60s timer or when forced.
+    void processFlush();
+    void requestFlush() { _flush_now = true; }   // Core 1 may call this (just sets a flag)
 
-    // Process ONE pending NVS write per call. Call at 100Hz from Core 0 (WebManager).
-    // Max flush latency for all 16 tables = 160ms — acceptable for adaptive learning.
-    void processDirtyTables();
-
-    int8_t* getTablePtr(bool is_upshift, uint8_t shift_index, bool is_pressure);
-    void saveTable(bool is_upshift, uint8_t shift_index, bool is_pressure);
+    // Web tuner access to the raw cell array (ADAPT_CLASSES*ADAPT_SHIFTS*ADAPT_TBINS cells).
+    AdaptCell* cellsPtr() { return &_cells[0][0][0]; }
+    int cellCount() { return ADAPT_CLASSES * ADAPT_SHIFTS * ADAPT_TBINS; }
+    void markAllDirtyAndFlush();
 };

@@ -52,31 +52,40 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
 
     if (_adaptives == nullptr) return;
 
-    uint8_t shift_idx = doc["shift"];
-    String type = doc["type"];        // "p" or "f"
-    bool is_up = (doc["dir"] == "up");
-
-    if (cmd == "get_table") {
-        int8_t* table = _adaptives->getTablePtr(is_up, shift_idx, (type == "p"));
+    // Adaptation v2 cells: flat array of {fill_t_cycles, fill_p_trim, apply_trim} ×
+    // (ADAPT_CLASSES*ADAPT_SHIFTS*ADAPT_TBINS). The dashboard tuner reads/writes them
+    // as a flat int8 stream of length cellCount()*3.
+    if (cmd == "get_cells") {
+        AdaptCell* cells = _adaptives->cellsPtr();
+        int n = _adaptives->cellCount();
         JsonDocument responseDoc;
-        responseDoc["type"] = "table_data";
+        responseDoc["type"] = "cell_data";
+        responseDoc["classes"] = ADAPT_CLASSES;
+        responseDoc["shifts"]  = ADAPT_SHIFTS;
+        responseDoc["tbins"]   = ADAPT_TBINS;
         JsonArray arr = responseDoc["data"].to<JsonArray>();
-        for (int i = 0; i < 256; i++) arr.add(table[i]);
-        char buffer[2048];
-        size_t resLen = serializeJson(responseDoc, buffer);
+        for (int i = 0; i < n; i++) {
+            arr.add(cells[i].fill_t_cycles);
+            arr.add(cells[i].fill_p_trim);
+            arr.add(cells[i].apply_trim);
+        }
+        char buffer[1536];
+        size_t resLen = serializeJson(responseDoc, buffer, sizeof(buffer));
         ws.textAll(buffer, resLen);
     }
-    else if (cmd == "set_table") {
-        bool is_pressure = (type == "p");
-        int lo = is_pressure ? PRESSURE_MOD_MIN : TIMING_MOD_MIN;
-        int hi = is_pressure ? PRESSURE_MOD_MAX : TIMING_MOD_MAX;
-        int8_t* table = _adaptives->getTablePtr(is_up, shift_idx, is_pressure);
+    else if (cmd == "set_cells") {
+        AdaptCell* cells = _adaptives->cellsPtr();
+        int n = _adaptives->cellCount();
         JsonArray arr = doc["data"].as<JsonArray>();
-        // Clamp on ingest: an out-of-range cell from the web would otherwise wrap
-        // int8 (e.g. 200 -> -56) and defeat the per-type modifier limits.
-        for (int i = 0; i < 256; i++) table[i] = (int8_t)constrain(arr[i].as<int>(), lo, hi);
-        _adaptives->saveTable(is_up, shift_idx, is_pressure);
-        Serial.println("Flash Memory Updated via Web Tuner!");
+        if ((int)arr.size() >= n * 3) {
+            for (int i = 0; i < n; i++) {
+                cells[i].fill_t_cycles = (int8_t)constrain(arr[i*3+0].as<int>(), FILL_T_CYC_MIN,  FILL_T_CYC_MAX);
+                cells[i].fill_p_trim   = (int8_t)constrain(arr[i*3+1].as<int>(), FILL_P_TRIM_MIN, FILL_P_TRIM_MAX);
+                cells[i].apply_trim    = (int8_t)constrain(arr[i*3+2].as<int>(), APPLY_TRIM_MIN,  APPLY_TRIM_MAX);
+            }
+            _adaptives->markAllDirtyAndFlush();
+            Serial.println("Adaptation cells updated via Web Tuner!");
+        }
     }
 }
 
@@ -97,9 +106,9 @@ void WebManager::broadcastTelemetry() {
     if (millis() - _last_broadcast_time >= 10) {
         buildAndSendTelemetryJSON();
         _last_broadcast_time = millis();
-        // Flush one pending NVS write per cycle (deferred from Core 1 evaluateShift).
-        // Core 0 only — preferences.putBytes() can block 1-10ms, unsafe on physics loop.
-        if (_adaptives) _adaptives->processDirtyTables();
+        // Persist adaptation on Core 0 (NVS can block 1-10ms). Flushes on a 60s timer
+        // or when a P/N-entry/web edit forced it — not per shift (NVS wear).
+        if (_adaptives) _adaptives->processFlush();
     }
     ws.cleanupClients();
 }
