@@ -139,8 +139,13 @@ const float N2_N3_BLEND_K = 1.641f;
 // M111 2.3 Kompressor @ 1.2 bar: ~300-330 Nm peak, near the W5A330 design ceiling.
 // ============================================================================
 const float MAP_ZERO_KPA      = 35.0f;   // closed-throttle manifold pressure
-const float K_T_NM_PER_KPA    = 1.55f;   // torque slope (~295 Nm at 225 kPa absolute)
-const float T_MAX_NM          = 330.0f;  // engine peak / gearbox design ceiling
+// Calibrated to the REAL M111+TVS1320 output: ~450 Nm at 1.2 bar boost (~220 kPa abs).
+// K_T = T_MAX/(220-35) = 450/185 ≈ 2.43, so full boost maps to ~100% load (was 1.55/330,
+// which under-read: full boost computed only ~287 Nm = 87% load and never clamped). Line
+// pressure already saturates above 70% load, but the torque-phase SPC apply (20+0.55·load,
+// caps at 75%) and the 4 adaptation torque bins both need the true range to be meaningful.
+const float K_T_NM_PER_KPA    = 2.43f;   // torque slope (~450 Nm at 220 kPa absolute)
+const float T_MAX_NM          = 450.0f;  // real engine peak (gearbox run above its rating)
 inline float estimateTorqueNm(float map_kpa) {
     return constrain(K_T_NM_PER_KPA * (map_kpa - MAP_ZERO_KPA), 0.0f, T_MAX_NM);
 }
