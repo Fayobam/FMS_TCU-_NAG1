@@ -96,34 +96,60 @@ int8_t AdaptiveMemory::getModifier(bool is_upshift, uint8_t shift_idx, bool is_p
     return is_pressure ? ds_pressure_modifiers[shift_idx][l][r] : ds_timing_modifiers[shift_idx][l][r];
 }
 
-void AdaptiveMemory::evaluateShift(bool is_upshift, uint8_t shift_idx, float tps_pct, float map_kpa,
-                                   float engine_rpm, unsigned long shift_time_ms, bool flare, bool bind) {
+void AdaptiveMemory::evaluateShift(bool is_upshift, uint8_t shift_idx, uint8_t l, uint8_t r,
+                                   unsigned long shift_time_ms, bool flare, bool bind) {
     if (shift_idx >= NUM_UPSHIFTS) return;
-    uint8_t l = getLoadBin(tps_pct, map_kpa);
-    uint8_t r = getRpmBin(engine_rpm);
+    l = constrain(l, 0, NUM_LOAD_BINS - 1);
+    r = constrain(r, 0, NUM_RPM_BINS - 1);
 
+    uint16_t set_bits = 0;
     if (is_upshift) {
-        if (flare)     pressure_modifiers[shift_idx][l][r] = clampPressure(pressure_modifiers[shift_idx][l][r] + 2);
-        else if (bind) pressure_modifiers[shift_idx][l][r] = clampPressure(pressure_modifiers[shift_idx][l][r] - 2);
-        _dirty_mask = (uint16_t)(_dirty_mask | (1u << shift_idx));              // upshift pressure bits 0-3
+        if (flare) {
+            // Clutch slipped — too soft. Add pressure.
+            pressure_modifiers[shift_idx][l][r] = clampPressure(pressure_modifiers[shift_idx][l][r] + 2);
+        } else if (bind) {
+            // Explicit harsh signal (reserved for a future direct shock metric).
+            pressure_modifiers[shift_idx][l][r] = clampPressure(pressure_modifiers[shift_idx][l][r] - 2);
+        } else if (shift_time_ms > 0 && shift_time_ms < UPSHIFT_FIRM_MS && l >= 4) {
+            // C3 harshness proxy: a clean shift completed very quickly under real load
+            // means the clutch grabbed hard — relax pressure. This is the downward path
+            // that keeps flare-only learning from ratcheting every cell to +60 %.
+            pressure_modifiers[shift_idx][l][r] = clampPressure(pressure_modifiers[shift_idx][l][r] - 2);
+        }
+        set_bits = (uint16_t)(1u << shift_idx);                  // upshift pressure bits 0-3
     } else {
-        if (flare)     ds_pressure_modifiers[shift_idx][l][r] = clampPressure(ds_pressure_modifiers[shift_idx][l][r] + 2);
-        else if (bind) ds_timing_modifiers[shift_idx][l][r]   = clampTiming(ds_timing_modifiers[shift_idx][l][r] + 5);
-        _dirty_mask = (uint16_t)(_dirty_mask | (1u << (8  + shift_idx)));      // downshift pressure bits 8-11
-        _dirty_mask = (uint16_t)(_dirty_mask | (1u << (12 + shift_idx)));      // downshift timing bits 12-15
+        if (flare) {
+            ds_pressure_modifiers[shift_idx][l][r] = clampPressure(ds_pressure_modifiers[shift_idx][l][r] + 2);
+            set_bits = (uint16_t)(1u << (8 + shift_idx));        // only ds_pressure changed
+        } else if (bind) {
+            ds_timing_modifiers[shift_idx][l][r] = clampTiming(ds_timing_modifiers[shift_idx][l][r] + 5);
+            set_bits = (uint16_t)(1u << (12 + shift_idx));       // only ds_timing changed
+        } else {
+            return;   // nothing learned — don't dirty (and re-flash) an unchanged table
+        }
     }
+
+    portENTER_CRITICAL(&_dirtyMux);
+    _dirty_mask = (uint16_t)(_dirty_mask | set_bits);
+    portEXIT_CRITICAL(&_dirtyMux);
 }
 
 void AdaptiveMemory::processDirtyTables() {
-    if (_dirty_mask == 0) return;
+    portENTER_CRITICAL(&_dirtyMux);
+    uint16_t mask = _dirty_mask;
+    portEXIT_CRITICAL(&_dirtyMux);
+    if (mask == 0) return;
+
     for (int bit = 0; bit < 16; bit++) {
-        if (_dirty_mask & (1u << bit)) {
+        if (mask & (1u << bit)) {
             bool is_up = (bit < 8);
             bool is_p  = ((bit & 4) == 0);
             uint8_t idx = bit & 3;
-            saveTable(is_up, idx, is_p);
+            saveTable(is_up, idx, is_p);                 // NVS write happens on Core 0
+            portENTER_CRITICAL(&_dirtyMux);
             _dirty_mask = (uint16_t)(_dirty_mask & ~(1u << bit));
-            return;  // one table per call; 100Hz × 16 tables = 160ms max flush
+            portEXIT_CRITICAL(&_dirtyMux);
+            return;  // one table per call
         }
     }
 }

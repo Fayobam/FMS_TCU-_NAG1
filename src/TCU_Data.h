@@ -106,11 +106,59 @@ const float    TPS_ROC_RELEASE_PCT_MS  = 0.02f;  // %/ms — essentially steady 
 const float    TPS_ROC_RELEASE_HOLD    = 40.0f;  // % TPS must be below to start cooldown
 const uint32_t TPS_ROC_COOLDOWN_MS     = 2000;   // ms to hold max pressure after settling
 
-// N2/N3 turbine speed blending constant (NAG52 calls this RATIO_2_1, default 1.61).
+// --- Adaptive harshness metrics (TUNE ON BENCH against real shift traces) ---
+// Upshift: we cannot measure driveline shock directly (output shaft samples at 20 Hz),
+// so total shift time is the proxy for the "too firm" signal that gives upshift
+// learning a downward path. Without it, flare-only learning ratchets monotonically
+// to +60 % and every cell that ever flares stays maximally firm forever.
+//   flare                              -> pressure +2 (clutch slipped, too soft)
+//   clean + faster than UPSHIFT_FIRM_MS at real load -> pressure -2 (too firm)
+const uint32_t UPSHIFT_FIRM_MS   = 180;  // total upshift quicker than this at load = too firm
+// Downshift: flag bind only for the output drop ATTRIBUTABLE TO THE CATCH CLUTCH,
+// i.e. beyond the vehicle's pre-catch deceleration trend — so routine braking
+// downshifts no longer log false binds and ratchet ds_timing to the +120 cap.
+const float DS_BIND_EXTRA_RPM    = 40.0f; // extra output drop (above braking trend) = real bind
+
+// N2/N3 turbine speed blending constant — DERIVED FROM TOOTH COUNTS (ATSG p.8, pp.32-33).
+// Front simple planetary: n2 = front carrier, n3 = front sun, turbine = front ring.
+//   n_turbine = n2*(1 + Zs/Zr) - n3*(Zs/Zr)   so K = 1 + Zs/Zr,  (K-1) = Zs/Zr
+//   Small NAG (W5A330): sun 50T, ring 78T → K = 1 + 50/78 = 1.6410  (THIS BUILD)
+//   Large NAG (W5A580): sun 58T, ring 92T → K = 1 + 58/92 = 1.6304
 // turbine = (N2 * K) - (N3 * (K-1))
-// Verify: N3=0 (gears 1&5) → N2*1.61;  N2=N3 (3rd gear) → N2*1.0 ✓
-// Adjust on bench if turbine RPM doesn't match engine RPM with TCC locked.
-const float N2_N3_BLEND_K = 1.61f;
+// Verify: N3=0 (gears 1&5) → N2*1.641;  N2=N3 (3rd gear direct) → N2*1.0 ✓
+// Bench-verify TCC-locked: turbine should equal engine RPM ±20.
+const float N2_N3_BLEND_K = 1.641f;
+
+// ============================================================================
+// TORQUE ESTIMATION — the master input (ATSG p.77: adaptation is denominated in Nm,
+// not raw TPS). MAP gives absolute, boost-capable manifold pressure; from it we
+// estimate input torque, then a 0-100% load and a 4-wide torque bin for adaptation.
+// M111 2.3 Kompressor @ 1.2 bar: ~300-330 Nm peak, near the W5A330 design ceiling.
+// ============================================================================
+const float MAP_ZERO_KPA      = 35.0f;   // closed-throttle manifold pressure
+const float K_T_NM_PER_KPA    = 1.55f;   // torque slope (~295 Nm at 225 kPa absolute)
+const float T_MAX_NM          = 330.0f;  // engine peak / gearbox design ceiling
+inline float estimateTorqueNm(float map_kpa) {
+    return constrain(K_T_NM_PER_KPA * (map_kpa - MAP_ZERO_KPA), 0.0f, T_MAX_NM);
+}
+inline float torqueLoadPct(float map_kpa) { return 100.0f * estimateTorqueNm(map_kpa) / T_MAX_NM; }
+inline uint8_t torqueBin(float map_kpa) {            // 4 bins: 0-25 / 25-50 / 50-75 / 75-100 %
+    return (uint8_t)constrain((int)(torqueLoadPct(map_kpa) / 25.0f), 0, 3);
+}
+
+// ============================================================================
+// SHIFT CLASSIFICATION (ATSG p.77 categories). Latched at beginShift(), never
+// re-evaluated mid-shift. POWER vs COAST keys off torque+throttle with hysteresis.
+// ============================================================================
+enum ShiftClass : uint8_t { SC_POWER_UP, SC_COAST_UP, SC_POWER_DOWN, SC_COAST_DOWN };
+enum PowerDownType : uint8_t { PD_NONE, PD_SPRAG, PD_TIMED };  // 3-2/2-1 sprag-assisted vs 4-3/5-4 timed
+const float CLASS_POWER_TPS_PCT  = 8.0f;    // POWER if tps > 8% AND torque > 25 Nm
+const float CLASS_POWER_TQ_NM    = 25.0f;
+const float CLASS_COAST_TPS_PCT  = 5.0f;    // COAST if tps < 5%; between = keep previous class
+
+// Adaptation gating (ATSG p.78): OEM relearn wants ATF 80-90 °C; 60-105 acceptable.
+const float ADAPT_ATF_MIN_C = 60.0f;
+const float ADAPT_ATF_MAX_C = 105.0f;
 
 // ============================================================================
 // 4. TELEMETRY DATA STRUCTURE (V9.0)
@@ -136,7 +184,13 @@ struct TCU_Telemetry {
     bool limp_reset_request = false;   // Set true (e.g. from web) to attempt recovery
     bool is_slipping       = false;
     unsigned long slip_start_time_ms = 0;
-    String limp_mode_reason = "";
+    // Status strings are fixed buffers (NOT Arduino String) because Core 1 writes
+    // them while Core 0 reads them in the telemetry JSON. A heap-backed String can
+    // realloc mid-read and corrupt the heap across cores. The seq counter is a
+    // seqlock: it is odd while a write is in progress, so the reader can detect and
+    // retry a torn read. Write only via setLimpReason()/setSafetyEvent() below.
+    char limp_mode_reason[64] = "";
+    volatile uint8_t limp_reason_seq = 0;
 
     // --- Manual Control ---
     bool paddle_up_request   = false;
@@ -144,7 +198,8 @@ struct TCU_Telemetry {
 
     // --- Auto-safety bookkeeping ---
     unsigned long last_auto_shift_ms = 0;
-    String last_safety_event = "";
+    char last_safety_event[64] = "";       // fixed buffer + seqlock (see limp_mode_reason note)
+    volatile uint8_t safety_event_seq = 0;
     bool reverse_abuse_active = false;   // R selected while moving forward — pressure dumped
 
     // --- Selector sensing (SEPARATED to fix the fighting-writer bug) ---
@@ -173,9 +228,32 @@ struct TCU_Telemetry {
 
     // --- Current shift phase (broadcast to dashboard for chart) ---
     uint8_t shift_phase = 0; // mirrors ShiftPhase enum: 0=CRUISING … 7=COMPLETION
+
+    // --- Shift classification & torque (ATSG class-based architecture) ---
+    float   t_est_nm     = 0.0f;  // estimated input torque (Nm)
+    float   load_pct     = 0.0f;  // 0-100% of T_MAX (drives all pressure maps)
+    uint8_t shift_class  = 0;     // mirrors ShiftClass for the active/last shift
+    uint8_t pd_type      = 0;     // mirrors PowerDownType when class is SC_POWER_DOWN
 };
 
 extern TCU_Telemetry telemetry;
+
+// ----------------------------------------------------------------------------
+// Cross-core-safe status string writers (seqlock). Call ONLY from Core 1.
+// Bump seq odd → copy → bump seq even, so a Core 0 reader can detect a torn read.
+// ----------------------------------------------------------------------------
+inline void setSafetyEvent(const char* msg) {
+    telemetry.safety_event_seq = telemetry.safety_event_seq + 1;   // odd: write in progress
+    strncpy(telemetry.last_safety_event, msg, sizeof(telemetry.last_safety_event) - 1);
+    telemetry.last_safety_event[sizeof(telemetry.last_safety_event) - 1] = '\0';
+    telemetry.safety_event_seq = telemetry.safety_event_seq + 1;   // even: done
+}
+inline void setLimpReason(const char* msg) {
+    telemetry.limp_reason_seq = telemetry.limp_reason_seq + 1;
+    strncpy(telemetry.limp_mode_reason, msg, sizeof(telemetry.limp_mode_reason) - 1);
+    telemetry.limp_mode_reason[sizeof(telemetry.limp_mode_reason) - 1] = '\0';
+    telemetry.limp_reason_seq = telemetry.limp_reason_seq + 1;
+}
 
 // ----------------------------------------------------------------------------
 // SHARED LOAD MODEL  (used by both AdaptiveMemory and ShiftScheduler so the

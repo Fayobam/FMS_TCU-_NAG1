@@ -42,8 +42,15 @@ class ShiftScheduler {
     float _turbine_rpm_at_shift_start;
     float _output_rpm_at_shift_start;
     float _ratio_at_overlap_start;  // for flare detection
+    float _output_rpm_at_catch_start;   // DS_CATCH bind metric: isolate clutch decel from braking
+    unsigned long _catch_start_ms;
+    float _ds_baseline_decel_rate;      // output rpm/ms decel measured BEFORE catch (vehicle/braking)
     bool  _prev_pn_raw;             // edge-detect for garage shift trigger
     unsigned long _engage_grace_until_ms; // suppress slip-limp during D-engagement sync
+    char  _prev_prnd;              // edge-detect for reverse selection
+    bool  _legit_reverse;         // R was selected while stopped → genuine reverse, allow any speed
+    uint8_t _shift_load_bin;      // load/RPM bins captured at shift INITIATION (so adaptive
+    uint8_t _shift_rpm_bin;       // learning writes the cell that actually caused the event)
 
     // TPS rate-of-change torque anticipation
     float         _prev_tps;
@@ -68,6 +75,7 @@ class ShiftScheduler {
     void checkTpsROC();                       // TPS rate-of-change torque anticipation
     bool checkReverseInhibit();               // RP_LOCK + R-while-moving failsafe (returns true if it owns outputs)
     bool isForwardRange();                    // prnd is one of D/4/3/2/1
+    void updateStandbyAndGarage();            // SPC/MPC standby duties + Y4 garage window (not shifting)
     bool beginShift(uint8_t target_gear, bool is_upshift, const char* source);
     float getTargetRatio(uint8_t gear);
     uint8_t getRoutingSolenoidForShift(uint8_t from_gear, uint8_t to_gear);

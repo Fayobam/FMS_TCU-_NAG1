@@ -33,8 +33,6 @@ class AdaptiveMemory {
     int8_t ds_pressure_modifiers[NUM_DOWNSHIFTS][NUM_LOAD_BINS][NUM_RPM_BINS];
     int8_t ds_timing_modifiers[NUM_DOWNSHIFTS][NUM_LOAD_BINS][NUM_RPM_BINS];
 
-    uint8_t getLoadBin(float tps_pct, float map_kpa);
-    uint8_t getRpmBin(float engine_rpm);
     void loadUltimateNag52Defaults();
     static int8_t clampPressure(int v);
     static int8_t clampTiming(int v);
@@ -42,17 +40,25 @@ class AdaptiveMemory {
     // Bit encoding: (is_upshift?0:8) + (is_pressure?0:4) + shift_idx (0-3)
     // Bits 0-3: upshift pressure, 4-7: upshift prefill, 8-11: ds pressure, 12-15: ds timing
     volatile uint16_t _dirty_mask = 0;
+    // Guards _dirty_mask: Core 1 (evaluateShift) sets bits, Core 0 (processDirtyTables)
+    // clears them. The |= / &=~ read-modify-writes are not atomic without this.
+    portMUX_TYPE _dirtyMux = portMUX_INITIALIZER_UNLOCKED;
 
   public:
     AdaptiveMemory();
     void begin();
 
+    // Public: ShiftScheduler captures the operating cell at shift INITIATION via these.
+    uint8_t getLoadBin(float tps_pct, float map_kpa);
+    uint8_t getRpmBin(float engine_rpm);
+
     int8_t getModifier(bool is_upshift, uint8_t shift_idx, bool is_pressure, float tps, float map_kpa, float rpm);
 
-    // Explicit shift_idx + direction. flare/bind passed directly.
+    // Explicit shift_idx + direction + the load/RPM bin captured at initiation.
+    // flare/bind passed directly; shift_time_ms drives the upshift harshness proxy.
     // Sets dirty bits — does NOT write NVS. Call processDirtyTables() from Core 0.
-    void evaluateShift(bool is_upshift, uint8_t shift_idx, float tps_pct, float map_kpa,
-                       float engine_rpm, unsigned long shift_time_ms, bool flare, bool bind);
+    void evaluateShift(bool is_upshift, uint8_t shift_idx, uint8_t load_bin, uint8_t rpm_bin,
+                       unsigned long shift_time_ms, bool flare, bool bind);
 
     // Process ONE pending NVS write per call. Call at 100Hz from Core 0 (WebManager).
     // Max flush latency for all 16 tables = 160ms — acceptable for adaptive learning.

@@ -121,10 +121,18 @@ Cross-referenced against dueATC (`SOL_12_45 / SOL_23 / SOL_34`):
 
 4-ohm coils overheat at continuous 12 V. Firmware: **83 % PWM for 60 ms** (snap open) → **33 % PWM** hold. Shift solenoids behave as on/off hydraulic switches.
 
-### Pressure Solenoids (Inverted Logic)
+### Pressure Solenoids (normally-high / fail-safe)
 
-`0 % commanded = 255 duty = MAX pressure`; `100 % commanded = 0 duty = MIN pressure`.
-The driver API (`setLinePressure`/`setShiftPressure`) takes an **actual-pressure %** and inverts internally, so `setLinePressure(100)` = maximum clamp. TCC is normal logic.
+MPC and SPC are **normally-high** regulator solenoids: **zero current = maximum
+pressure** (fail-safe). The API takes an **actual-pressure %** and inverts to PWM:
+
+- `setLinePressure(100)` → duty 0 → ~0 current → **max pressure** (limp/fail-safe)
+- `setLinePressure(0)`   → duty 255 → max current → **min pressure**
+
+"Commanded %" *is* pressure %. (The earlier "255 duty = MAX pressure" wording was
+backwards — current and pressure are **inversely** related here.) This is why §16.3/H2
+flags resting SPC at 0 %: full coil current for *minimum* shift pressure. TCC is
+normal logic (more duty = more lock-up).
 
 ---
 
@@ -323,6 +331,7 @@ Paddle requests are also ignored outside a forward range (`isForwardRange()` gat
 | V11 | Lug floor at 2nd (predictive check removed); **NVS write deferred to Core 0** |
 | V12 | Engagement-sync grace; mid-shift abort + OVERLAP backstop; **RP_LOCK interlock** + reverse-at-speed failsafe; paddle forward-range gate |
 | V12.1 | Reverse failsafe outranks limp; overrev covers manual `'1'`/`'2'` |
+| V13 | External-review fixes: reverse trigger now edge/intent-latched (C1); adaptive learns the initiation cell + upshift down-path + braking-aware DS bind (C2/C3/C4); telemetry 10→100 Hz (C5); `char[]`+seqlock status strings (A2); limp in all forward ranges (H4); web-ingest clamp (M1); bounded WS parse (M3); `_dirtyMux` (M6) |
 
 ---
 
@@ -346,11 +355,32 @@ This section is the audit surface. Everything below is either an **assumption th
 
 ### 16.2 Concurrency concerns (genuine — please scrutinise)
 
-1. **`String` telemetry fields read across cores without a lock.** `last_safety_event` and `limp_mode_reason` are Arduino `String` (heap-backed). **Core 1 writes them; Core 0 reads them in `buildAndSendTelemetryJSON()`** with no mutex. Concurrent access to a `String` mid-reallocation can corrupt the heap / crash. *This is the most likely real defect in the codebase.* Options: replace with fixed `char[N]` buffers, double-buffer, or guard with a `portMUX`. **Recommend fixing before road test.**
+1. **✅ FIXED (V13) — `String` telemetry fields read across cores.** `last_safety_event` and `limp_mode_reason` are now fixed `char[64]` buffers (no heap, no realloc, no cross-core crash). Writes go through `setSafetyEvent()/setLimpReason()` which bump a `seq` counter odd→even (seqlock); Core 0 reads via `readStatusString()` and retries a torn read. The external reviewer also flagged that `checkReverseInhibit()` was assigning the string **every 1 ms** during abuse — now it writes only on the abuse-entry transition.
 
-2. **`_dirty_mask` RMW is not atomic.** Core 1 does `_dirty_mask |= bit` (now written as a load/store pair); Core 0 does `_dirty_mask &= ~bit`. A truly concurrent read-modify-write could drop a set or clear. Probability is low (writes are per-shift, clears at 100 Hz) and the only consequence is a delayed/missed NVS flush of one table, but it is not provably correct. Consider `std::atomic<uint16_t>` or a critical section.
+2. **✅ FIXED (V13) — `_dirty_mask` RMW.** Both the Core-1 `|=` and the Core-0 `&= ~bit` are now wrapped in a shared `portMUX_TYPE _dirtyMux` (`portENTER/EXIT_CRITICAL`). As a bonus the downshift path now dirties only the *one* table it changed (was dirtying both ds_pressure and ds_timing every event).
 
 3. **Scalar telemetry (float/uint8) cross-core reads** are unsynchronised but 32-bit aligned word access is atomic on Xtensa, so individual fields are fine. The risk is only *tearing across multiple related fields* read at slightly different instants (e.g. ratio vs gear) — cosmetic on the dashboard, not used for control on Core 0.
+
+### 16.2b External review — DEFERRED items (intentionally open, with rationale)
+
+The first external review (722.6/EGS52 knowledge, no ATSG) raised these beyond the ones
+fixed in V13. They are deferred deliberately — each needs the ATSG PDF, a hardware fact,
+a bench trace, or conflicts with the owner's stated intent. **Do not silently "fix" these
+without resolving the gating question first.**
+
+| # | Item | Why deferred / gating question |
+|---|---|---|
+| A1 | Re-derive gear after abort/limp instead of asserting 2nd | The reviewer confirmed pulse-latch holds the *current* gear mid-drive, so all-off ≠ 2nd while rolling. BUT the fix hinges on **whether cycling the manual valve through N resets the latch to 2nd** — an ATSG hydraulic question. Guessing wrong is worse than the current behaviour. |
+| H1 | TCC apply/release rate-limit (±1–5 %/ms at 1 kHz is 10–50× too fast) | Real, but a **shift-feel change**; do it together with A3 and re-tune. Low risk to defer (TCC is opened during all shifts anyway). |
+| H2 | Rest SPC de-energized between shifts (currently full current at 0 %) | Correct *if* standby SPC pressure is hydraulically blocked with no shift valve stroked — **ATSG hydraulic-diagram question**. Wrong assumption = max shift pressure at rest. |
+| H3 | Delete the Y4 garage jiggle (5 W continuous in P/N, unverified benefit) | **Owner design decision** — was added deliberately. Neither EGS52 nor ultimate-nag52 pulses the 3-4 solenoid in P/N; confirm the source before removing. |
+| A3 | Real ramp intervals (ramps are near-steps at 1 kHz tick) | Partly **conflicts with the owner's explicit "firm shifts over smooth"** mandate. Needs a deliberate decision on how firm, then a ramp-interval (e.g. step every 5–10 ms). Couples with C3 — adaptive should be re-validated after. |
+| H5 | `analogReadMilliVolts()` + divide TPS so WOT ≤ 2.5 V | ESP32 ADC nonlinearity is real; this is a **calibration-time** improvement, best done on the car with the actual sensors. |
+| H6 | Confirm M111 trigger is 60 (vs 60−2) and VR-sensor conditioning | **Hardware fact** — cross-referenced as 60 via dueATC, but verify the physical wheel + whether a VR conditioner (MAX9926/LM1815) feeds the GPIO. |
+| M2 | Edge-detect paddles (held paddle currently machine-guns shifts every 200 ms) | Genuine; deferred only because it's an **input-semantics change** worth confirming the owner wants (vs intentional repeat). Quick to do. |
+| M4 | `ws.textAll()` called from two tasks; `saveTable()` inside WS callback | Needs a small mailbox refactor (service web cmds from `broadcastTelemetry`). Larger change; AsyncWebSocket usually survives but isn't documented thread-safe. |
+| M5 | NVS wear (per-shift 256-byte writes) | Partially addressed in V13 (downshift no longer rewrites the unchanged table). Full fix = persist on a timer / on entry to P/N. Defer until learning cadence is measured. |
+| H2/SPC + limp | Limp currently commands SPC 0 (= max current); native hydraulic limp is everything de-energized | Same ATSG gate as H2. |
 
 ### 16.3 Residual functional limitations (accepted, not bugs)
 

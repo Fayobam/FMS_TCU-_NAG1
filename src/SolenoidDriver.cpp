@@ -28,12 +28,21 @@ void SolenoidDriver::begin() {
     setShiftPressure(0);
     setTCC(0);
     stopAllShiftSolenoids();
+    crankPulseY3();             // condition the 1-2/4-5 valve during the boot/crank window
 }
 
 void SolenoidDriver::update() {
     processRoutingSolenoid(_y3);
     processRoutingSolenoid(_y4);
     processRoutingSolenoid(_y5);
+
+    // End the boot/crank Y3 conditioning pulse after ~400ms (ATSG p.53).
+    if (_crank_active &&
+        (xTaskGetTickCount() - _crank_start_tick) >= (400 / portTICK_PERIOD_MS)) {
+        ledcWrite(_y3.pin, 0);
+        _y3.state = STATE_OFF;
+        _crank_active = false;
+    }
 }
 
 void SolenoidDriver::processRoutingSolenoid(RoutingSolenoid &sol) {
@@ -71,15 +80,41 @@ void SolenoidDriver::stopAllShiftSolenoids() {
     stopShiftSolenoid(_y5.pin);
 }
 
-void SolenoidDriver::startGarageShiftJiggle() {
-    if (_y4.state == STATE_OFF) {
-        ledcWrite(_y4.pin, 95);         // ~37% continuous buffer fill in P/N
-        _y4.state = STATE_HOLDING;
+// Garage Y4 pulse — pegs the B2 shift valve so the B2 double-piston counter-pressure
+// softens N->D/R engagement (ATSG pp.53-54). Pulsed in Park and during the lever-movement
+// window only; NOT held forever in N at rest. _y4_garage_owned guards against clobbering
+// an active 3-4 shift that legitimately holds Y4.
+void SolenoidDriver::setGarageY4(bool pulsing) {
+    if (pulsing) {
+        if (_y4.state == STATE_OFF) {
+            ledcWrite(_y4.pin, 95);     // ~37% duty
+            _y4.state = STATE_HOLDING;
+            _y4_garage_owned = true;
+        }
+    } else if (_y4_garage_owned) {
+        ledcWrite(_y4.pin, 0);
+        _y4.state = STATE_OFF;
+        _y4_garage_owned = false;
     }
 }
 
-void SolenoidDriver::stopGarageShiftJiggle() {
-    stopShiftSolenoid(_y4.pin);
+// Standby SPC/MPC duties when NOT shifting (ATSG p.53 solenoid chart).
+void SolenoidDriver::setStandbyProfile(StandbyProfile p) {
+    if (p == STANDBY_PARK_NEUTRAL) {
+        setShiftPressure(67);   // ~33% duty
+        setLinePressure(60);    // ~40% duty
+    } else {
+        setShiftPressure(100);  // de-energized = OEM "OFF". MPC left to the line schedule.
+    }
+}
+
+// One-shot ~40% duty pulse on Y3 at boot to condition the 1-2/4-5 valve during crank.
+void SolenoidDriver::crankPulseY3() {
+    ledcWrite(_y3.pin, 102);    // ~40% duty
+    _y3.state = STATE_HOLDING;  // block an accidental fire during the pulse
+    _y4_garage_owned = false;
+    _crank_active = true;
+    _crank_start_tick = xTaskGetTickCount();
 }
 
 // ------ INVERTED-LOGIC PRESSURE COMMANDS, now with telemetry feedback ------

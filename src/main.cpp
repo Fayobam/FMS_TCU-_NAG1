@@ -74,14 +74,7 @@ void core1PhysicsTask(void *pvParameters) {
             speed_update_counter = 0;
         }
 
-        shiftScheduler.update();
-
-        // Garage jiggle stays tied to actual selector position
-        if (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N') {
-            solenoids.startGarageShiftJiggle();
-        } else {
-            solenoids.stopGarageShiftJiggle();
-        }
+        shiftScheduler.update();   // owns standby/garage Y4 windowing now (ATSG-correct)
 
         solenoids.update();
         vTaskDelayUntil(&xLastWakeTime, xFrequency);

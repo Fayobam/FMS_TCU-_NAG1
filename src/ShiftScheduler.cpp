@@ -24,6 +24,10 @@ void ShiftScheduler::begin() {
     _high_torque_mode = false;
     _ht_release_start_ms = 0;
     _engage_grace_until_ms = 0;
+    _prev_prnd = 'P';
+    _legit_reverse = false;
+    _shift_load_bin = 0;
+    _shift_rpm_bin = 0;
 }
 
 bool ShiftScheduler::isForwardRange() {
@@ -156,6 +160,12 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     _current_timing_mod   = _adaptives->getModifier(is_upshift, _active_shift_idx, false,
                                 telemetry.tps_pct, telemetry.map_kpa, telemetry.engine_rpm);
 
+    // Capture the operating cell NOW, at initiation. evaluateShift() runs in
+    // COMPLETION — by then RPM has dropped 1.5-2.5k and the driver may have lifted,
+    // so recomputing the bin there would learn into the wrong cell.
+    _shift_load_bin = _adaptives->getLoadBin(telemetry.tps_pct, telemetry.map_kpa);
+    _shift_rpm_bin  = _adaptives->getRpmBin(telemetry.engine_rpm);
+
     telemetry.flare_detected = false;
     telemetry.bind_detected  = false;
     _turbine_rpm_at_shift_start = telemetry.turbine_rpm;
@@ -191,8 +201,10 @@ void ShiftScheduler::checkSafetyShifts() {
     if (telemetry.engine_rpm > RPM_OVERREV_UPSHIFT && telemetry.current_gear < 5) {
         if (beginShift(telemetry.current_gear + 1, true, "OVERREV")) {
             telemetry.last_auto_shift_ms = millis();
-            telemetry.last_safety_event = "AUTO UPSHIFT (overrev " + String((int)telemetry.engine_rpm) + ")";
-            Serial.println(telemetry.last_safety_event);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "AUTO UPSHIFT (overrev %d)", (int)telemetry.engine_rpm);
+            setSafetyEvent(buf);
+            Serial.println(buf);
         }
         return;
     }
@@ -206,8 +218,10 @@ void ShiftScheduler::checkSafetyShifts() {
         telemetry.current_gear > 2) {
         if (beginShift(telemetry.current_gear - 1, false, "LUG")) {
             telemetry.last_auto_shift_ms = millis();
-            telemetry.last_safety_event = "AUTO DOWNSHIFT (lug " + String((int)telemetry.engine_rpm) + ")";
-            Serial.println(telemetry.last_safety_event);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "AUTO DOWNSHIFT (lug %d)", (int)telemetry.engine_rpm);
+            setSafetyEvent(buf);
+            Serial.println(buf);
         }
     }
 }
@@ -229,7 +243,7 @@ void ShiftScheduler::checkLimpMode(float target_ratio) {
     // Slip detection only while cruising, in D, moving, and NOT at high load
     // (high-boost launches legitimately slip the converter and chirp tyres).
     bool conditions = (_current_phase == PHASE_CRUISING &&
-                       telemetry.prnd_state == 'D' &&
+                       isForwardRange() &&            // D and manual limits '4'/'3'/'2'/'1'
                        telemetry.output_rpm > 200.0f &&
                        telemetry.tps_pct < 80.0f &&
                        telemetry.map_kpa < 130.0f);
@@ -244,10 +258,12 @@ void ShiftScheduler::checkLimpMode(float target_ratio) {
                 telemetry.slip_start_time_ms = millis();
             } else if ((millis() - telemetry.slip_start_time_ms) > 400) {
                 telemetry.is_limp_mode = true;
-                telemetry.limp_mode_reason = "FATAL SLIP GEAR " + String(telemetry.current_gear) +
-                                             " DIFF " + String((int)mismatch) + " RPM";
+                char buf[64];
+                snprintf(buf, sizeof(buf), "FATAL SLIP GEAR %d DIFF %d RPM",
+                         telemetry.current_gear, (int)mismatch);
+                setLimpReason(buf);
                 Serial.println("!!! TRANSMISSION PROTECTION ACTIVATED !!!");
-                Serial.println(telemetry.limp_mode_reason);
+                Serial.println(buf);
             }
         } else {
             telemetry.is_slipping = false;
@@ -320,20 +336,58 @@ void ShiftScheduler::checkTpsROC() {
 // ============================================================================
 bool ShiftScheduler::checkReverseInhibit() {
     bool moving = telemetry.output_rpm > OUTPUT_RPM_MOVING;
-    _solenoids->setShiftLock(moving);    // Layer 1 — always maintained
+    char now = telemetry.prnd_state;
 
-    if (telemetry.prnd_state == 'R' && telemetry.output_rpm > REVERSE_INHIBIT_SPEED_RPM) {
+    // Layer 1: block the lever from LEAVING the forward range while moving. Don't
+    // drive the lock while already in R/P/N — its job is the forward→R/P gate only.
+    _solenoids->setShiftLock(moving && isForwardRange());
+
+    // The output PCNT sensor has NO direction. We must NOT infer "reverse at speed"
+    // purely from prnd=='R' && output>threshold — that also describes a driver simply
+    // reversing fast up a driveway, and would wrongly dump pressure and cook B3.
+    // Instead latch intent on the EDGE of entering R:
+    //   entered R while stopped  -> genuine reverse, allow any subsequent speed
+    //   entered R while rolling  -> abuse, run the failsafe
+    bool entering_R = (now == 'R' && _prev_prnd != 'R');
+    if (entering_R) {
+        _legit_reverse = (telemetry.output_rpm <= REVERSE_INHIBIT_SPEED_RPM);
+    }
+    if (now != 'R') _legit_reverse = false;   // leaving R clears the latch
+    _prev_prnd = now;
+
+    bool abuse = (now == 'R' && !_legit_reverse &&
+                  telemetry.output_rpm > REVERSE_INHIBIT_SPEED_RPM);
+    if (abuse) {
         _solenoids->stopAllShiftSolenoids();
         _solenoids->setShiftPressure(0);
         _solenoids->setTCC(0);                               // don't transmit rigidly
         _solenoids->setLinePressure(REVERSE_ABUSE_LINE_PCT); // bleed clamp: slip, not shock
         _current_phase = PHASE_CRUISING;
+        if (!telemetry.reverse_abuse_active)                 // write the string ONCE, on entry
+            setSafetyEvent("REVERSE@SPEED: line pressure dumped (protect B3)");
         telemetry.reverse_abuse_active = true;
-        telemetry.last_safety_event = "REVERSE@SPEED: line pressure dumped (protect B3)";
         return true;
     }
     telemetry.reverse_abuse_active = false;
     return false;
+}
+
+// ============================================================================
+// STANDBY + GARAGE (ATSG p.53-54 / spec §7). Called only when NOT shifting.
+//   Park or lever-movement window -> pulse Y4 (B2 counter-pressure) + P/N standby duties.
+//   N at rest                     -> Y4 off, P/N standby duties.
+//   Settled in a driving gear     -> Y4 off, SPC de-energized, MPC on the line schedule.
+// The lever-movement window reuses _engage_grace_until_ms (set on the P/N-exit edge).
+// ============================================================================
+void ShiftScheduler::updateStandbyAndGarage() {
+    bool in_park      = (telemetry.prnd_state == 'P');
+    bool in_pn        = (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N');
+    bool lever_window = (millis() < _engage_grace_until_ms);
+
+    _solenoids->setGarageY4(in_park || lever_window);
+
+    if (in_pn || lever_window) _solenoids->setStandbyProfile(STANDBY_PARK_NEUTRAL);
+    else                       _solenoids->setStandbyProfile(STANDBY_DRIVING);
 }
 
 // ============================================================================
@@ -362,7 +416,7 @@ void ShiftScheduler::update() {
             telemetry.is_limp_mode = false;
             telemetry.limp_reset_request = false;
             telemetry.is_slipping = false;
-            telemetry.limp_mode_reason = "";
+            setLimpReason("");
             Serial.println("Limp mode reset.");
         }
         return;
@@ -371,6 +425,10 @@ void ShiftScheduler::update() {
     checkTpsROC();
     telemetry.shift_phase = (uint8_t)_current_phase;
     calculateLiveRatio();
+
+    // Torque estimate is the master input for all pressure/class decisions (ATSG p.77).
+    telemetry.t_est_nm = estimateTorqueNm(telemetry.map_kpa);
+    telemetry.load_pct = torqueLoadPct(telemetry.map_kpa);
 
     TickType_t current_tick = xTaskGetTickCount();
     unsigned long time_in_phase_ms = (current_tick - _phase_start_tick) * portTICK_PERIOD_MS;
@@ -388,7 +446,7 @@ void ShiftScheduler::update() {
         telemetry.current_gear = 2;        // manual valve default
         telemetry.target_gear  = 2;
         _current_phase = PHASE_CRUISING;
-        telemetry.last_safety_event = "SHIFT ABORTED (selector left drive)";
+        setSafetyEvent("SHIFT ABORTED (selector left drive)");
     }
 
     calculateLinePressure();
@@ -397,6 +455,8 @@ void ShiftScheduler::update() {
 
     switch (_current_phase) {
         case PHASE_CRUISING: {
+            updateStandbyAndGarage();   // SPC/MPC standby duties + Y4 garage window
+
             // Garage shift: trigger on the FALLING EDGE of the P/N switch.
             // The physical P/N switch (multiplexed on ATF_TEMP pin) opens the moment
             // the manual valve leaves P/N — this is the reliable trigger, independent
@@ -490,14 +550,31 @@ void ShiftScheduler::update() {
             // satisfied immediately (current ratio already > target-0.2 on entry).
             if (telemetry.live_ratio >= (target_ratio - 0.05f) || time_in_phase_ms > 400) {
                 _current_phase = PHASE_DS_CATCH; _phase_start_tick = current_tick;
+                // Snapshot for the bind metric: the output decel BEFORE the catch
+                // clutch applies is purely vehicle/braking. Any sharper drop once
+                // catch pressure ramps is the clutch's contribution.
+                _output_rpm_at_catch_start = telemetry.output_rpm;
+                _catch_start_ms = millis();
+                unsigned long pre_ms = _catch_start_ms - _shift_stopwatch_start;
+                _ds_baseline_decel_rate = (pre_ms > 0)
+                    ? (_output_rpm_at_shift_start - _output_rpm_at_catch_start) / (float)pre_ms
+                    : 0.0f;
             }
             break;
 
         case PHASE_DS_CATCH:
             if (telemetry.shift_pressure_pct < (90 + _current_pressure_mod))
                 _solenoids->setShiftPressure(telemetry.shift_pressure_pct + 2);
-            if (telemetry.output_rpm < (_output_rpm_at_shift_start - 30.0f))
-                telemetry.bind_detected = true;
+            // Bind = output drop BEYOND the pre-catch braking trend (C4). Subtracting
+            // the vehicle-decel baseline stops routine brake-and-downshift from
+            // logging false binds that would ratchet ds_timing to the +120 cap.
+            {
+                float elapsed = (float)(millis() - _catch_start_ms);
+                float predicted_braking_drop = _ds_baseline_decel_rate * elapsed;
+                float actual_drop = _output_rpm_at_catch_start - telemetry.output_rpm;
+                if ((actual_drop - predicted_braking_drop) > DS_BIND_EXTRA_RPM)
+                    telemetry.bind_detected = true;
+            }
             // DISTINCT exit from SYNC: tighter ratio tolerance (0.02 vs 0.05)
             // AND minimum 40ms — ensures the pressure ramp has real duration before
             // we declare the gear locked. Previously used target-0.05 (same as SYNC)
@@ -514,9 +591,10 @@ void ShiftScheduler::update() {
 
         case PHASE_COMPLETION:
             if (time_in_phase_ms > 50) {
-                // Explicit, unambiguous index + direction (no gear arithmetic)
+                // Learn into the cell captured at INITIATION (C2), passing the full
+                // shift time so the harshness proxy (C3) has its downward path.
                 _adaptives->evaluateShift(_is_upshift, _active_shift_idx,
-                    telemetry.tps_pct, telemetry.map_kpa, telemetry.engine_rpm,
+                    _shift_load_bin, _shift_rpm_bin,
                     telemetry.last_shift_time_ms, telemetry.flare_detected, telemetry.bind_detected);
                 _current_phase = PHASE_CRUISING;
             }

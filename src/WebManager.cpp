@@ -27,7 +27,7 @@ void WebManager::begin() {
         if(type == WS_EVT_DATA){
             AwsFrameInfo *info = (AwsFrameInfo*)arg;
             if(info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT){
-                data[len] = 0; this->handleWebSocketMessage(arg, data, len);
+                this->handleWebSocketMessage(arg, data, len);   // length-aware; no OOB terminator write
             }
         }
     });
@@ -38,7 +38,7 @@ void WebManager::begin() {
 
 void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, (char*)data);
+    DeserializationError error = deserializeJson(doc, data, len);  // bounded by len, no terminator needed
     if (error) return;
 
     String cmd = doc["cmd"];
@@ -67,16 +67,34 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         ws.textAll(buffer, resLen);
     }
     else if (cmd == "set_table") {
-        int8_t* table = _adaptives->getTablePtr(is_up, shift_idx, (type == "p"));
+        bool is_pressure = (type == "p");
+        int lo = is_pressure ? PRESSURE_MOD_MIN : TIMING_MOD_MIN;
+        int hi = is_pressure ? PRESSURE_MOD_MAX : TIMING_MOD_MAX;
+        int8_t* table = _adaptives->getTablePtr(is_up, shift_idx, is_pressure);
         JsonArray arr = doc["data"].as<JsonArray>();
-        for (int i = 0; i < 256; i++) table[i] = (int8_t)arr[i].as<int>();
-        _adaptives->saveTable(is_up, shift_idx, (type == "p"));
+        // Clamp on ingest: an out-of-range cell from the web would otherwise wrap
+        // int8 (e.g. 200 -> -56) and defeat the per-type modifier limits.
+        for (int i = 0; i < 256; i++) table[i] = (int8_t)constrain(arr[i].as<int>(), lo, hi);
+        _adaptives->saveTable(is_up, shift_idx, is_pressure);
         Serial.println("Flash Memory Updated via Web Tuner!");
     }
 }
 
+// Seqlock read of a Core-1-written status string into a stable local buffer, so a
+// concurrent Core-1 write can't hand us a torn string during JSON serialization.
+static void readStatusString(const volatile uint8_t &seq, const char *src, char *dst, size_t n) {
+    for (int tries = 0; tries < 4; tries++) {
+        uint8_t s0 = seq;
+        strncpy(dst, src, n - 1); dst[n - 1] = '\0';
+        uint8_t s1 = seq;
+        if (s0 == s1 && (s0 & 1) == 0) return;   // stable and not mid-write
+    }
+}
+
 void WebManager::broadcastTelemetry() {
-    if (millis() - _last_broadcast_time >= 100) {
+    // 100 Hz (10 ms gate) — matches the dashboard chart sample design and the
+    // documented stream rate. Was 100 ms (10 Hz), 10× slower than every doc claim.
+    if (millis() - _last_broadcast_time >= 10) {
         buildAndSendTelemetryJSON();
         _last_broadcast_time = millis();
         // Flush one pending NVS write per cycle (deferred from Core 1 evaluateShift).
@@ -109,8 +127,11 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["tccActual"] = telemetry.tcc_actual_slip_rpm;
 
     doc["limp"]      = telemetry.is_limp_mode;
-    doc["limpReason"]= telemetry.limp_mode_reason;
-    doc["safety"]    = telemetry.last_safety_event;
+    char limpReason[64], safetyEvent[64];
+    readStatusString(telemetry.limp_reason_seq, telemetry.limp_mode_reason, limpReason, sizeof(limpReason));
+    readStatusString(telemetry.safety_event_seq, telemetry.last_safety_event, safetyEvent, sizeof(safetyEvent));
+    doc["limpReason"]= limpReason;
+    doc["safety"]    = safetyEvent;
     doc["atfTemp"]   = telemetry.atf_temp_c;
     doc["htMode"]    = telemetry.high_torque_mode;
     doc["phase"]     = telemetry.shift_phase;
