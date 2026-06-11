@@ -24,6 +24,10 @@ void SolenoidDriver::begin() {
     pinMode(_rp_lock, OUTPUT);
     setShiftLock(false);            // boot released = lever free (fail-safe)
 
+    // rusEFI torque-cut request line (optional, default-disabled).
+    pinMode(PIN_TORQUE_CUT, OUTPUT);
+    setTorqueCut(false);
+
     setLinePressure(0);
     setShiftPressure(0);
     setTCC(0);
@@ -106,6 +110,11 @@ void SolenoidDriver::setStandbyProfile(StandbyProfile p) {
     } else {
         setShiftPressure(100);  // de-energized = OEM "OFF". MPC left to the line schedule.
     }
+}
+
+// Assert the rusEFI shift-retard request line (gated by the feature flag).
+void SolenoidDriver::setTorqueCut(bool on) {
+    digitalWrite(PIN_TORQUE_CUT, (ENABLE_TORQUE_CUT && on) ? HIGH : LOW);
 }
 
 // One-shot ~40% duty pulse on Y3 at boot to condition the 1-2/4-5 valve during crank.

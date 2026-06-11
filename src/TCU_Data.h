@@ -21,6 +21,9 @@ const uint8_t PIN_Y4  = 18; // Solenoid 3-4
 const uint8_t PIN_TCC = 27; // Torque Converter Clutch
 const uint8_t PIN_RP_LOCK = 13; // Reverse/Park interlock solenoid — digital out (GPIO13,
                                 // ADC2 so useless for analog anyway; NOT a strapping pin)
+const uint8_t PIN_TORQUE_CUT = 15; // rusEFI shift-retard request line (schematic EXTRA_OUT).
+                                // NOTE: GPIO15 is a strapping pin (MTDO) — held low only after
+                                // boot. Default-disabled until the rusEFI digital input is wired.
 
 const uint8_t PIN_TPS      = 36; // Throttle Position Sensor    ADC1_CH0
 const uint8_t PIN_MAP      = 33; // Manifold Absolute Pressure  ADC1_CH5  <-- REWIRED from 23 (23 has no ADC)
@@ -168,6 +171,24 @@ const uint16_t FILL_T_MS[4]  = { 140, 150, 180, 130 };
 
 // 20ms pressure-update quantization (ATSG p.80: ETC changes amplitude once per 20ms).
 const uint16_t PRESSURE_TICK_MS = 20;
+
+// --- Coast-down auto scheduler (spec §4.5) — output-shaft RPM thresholds ---
+// Each catch lands at an idle-friendly turbine speed. Floor is 2nd (owner's
+// 2nd-gear-launch model); 1st stays the driver's choice. 24-tooth output reluctor.
+const float COAST_DN_5_TO_4 = 1900.0f;  // 5->4 below this output rpm
+const float COAST_DN_4_TO_3 = 1400.0f;  // 4->3
+const float COAST_DN_3_TO_2 =  900.0f;  // 3->2
+
+// --- Kickdown arm (spec §4.6) ---
+const float KICKDOWN_TPS_PCT      = 70.0f;   // tps above which a power-down is evaluated
+const float KICKDOWN_MAX_ENG_RPM  = 5200.0f; // don't kickdown if already this high (would overrev)
+
+// --- Optional rusEFI torque-cut during power-up INERTIA (spec §9) ---
+// Asserting a timing-retard request lets the clutch absorb less energy per shift —
+// the single biggest "sharp without sacrificing health" lever. Default OFF until the
+// GPIO15 -> rusEFI digital input is wired and the retard is configured in rusEFI.
+const bool  ENABLE_TORQUE_CUT     = false;
+const float TORQUE_CUT_MIN_LOAD   = 50.0f;   // only on power upshifts above this % load
 
 // ============================================================================
 // 4. TELEMETRY DATA STRUCTURE (V9.0)

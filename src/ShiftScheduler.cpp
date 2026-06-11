@@ -283,6 +283,50 @@ void ShiftScheduler::checkSafetyShifts() {
 }
 
 // ----------------------------------------------------------------------------
+// COAST-DOWN SCHEDULER (spec §4.5). While coasting to a stop at closed throttle,
+// auto-downshift at output-shaft RPM thresholds so each catch lands at an idle-
+// friendly turbine speed. Floor is 2nd. Suppressed if a paddle request is pending.
+// ----------------------------------------------------------------------------
+void ShiftScheduler::checkCoastDownSchedule() {
+    if (_current_phase != PHASE_CRUISING) return;
+    if (!isForwardRange()) return;
+    if (telemetry.paddle_up_request || telemetry.paddle_down_request) return;
+    if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
+    if (telemetry.tps_pct >= CLASS_COAST_TPS_PCT) return;     // coast only (closed throttle)
+
+    uint8_t g = telemetry.current_gear;
+    if (g <= 2) return;                                       // floor at 2nd
+    float o = telemetry.output_rpm;
+    bool want = (g == 5 && o < COAST_DN_5_TO_4) ||
+                (g == 4 && o < COAST_DN_4_TO_3) ||
+                (g == 3 && o < COAST_DN_3_TO_2);
+    if (want && beginShift(g - 1, false, "COAST")) {
+        telemetry.last_auto_shift_ms = millis();
+    }
+}
+
+// ----------------------------------------------------------------------------
+// KICKDOWN (spec §4.6). Hard tip-in → request a power-down if the lower gear keeps
+// predicted turbine under the money-shift ceiling. Multi-gear kickdowns happen as
+// back-to-back single shifts across cooldowns (never skip-shifts).
+// ----------------------------------------------------------------------------
+void ShiftScheduler::checkKickdown() {
+    if (_current_phase != PHASE_CRUISING) return;
+    if (!isForwardRange()) return;
+    if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
+    if (telemetry.tps_pct < KICKDOWN_TPS_PCT) return;
+    if (telemetry.engine_rpm > KICKDOWN_MAX_ENG_RPM) return;  // already high → don't overrev
+
+    uint8_t g = telemetry.current_gear;
+    if (g <= 1) return;
+    float predicted = telemetry.output_rpm * getTargetRatio(g - 1);
+    if (predicted > RPM_MAX_SAFE_DOWNSHIFT) return;           // money-shift guard
+    if (beginShift(g - 1, false, "KICKDOWN")) {
+        telemetry.last_auto_shift_ms = millis();
+    }
+}
+
+// ----------------------------------------------------------------------------
 // LIMP MODE  (load-aware threshold + deliberate reset path)
 // ----------------------------------------------------------------------------
 void ShiftScheduler::checkLimpMode(float target_ratio) {
@@ -511,7 +555,9 @@ void ShiftScheduler::update() {
 
     calculateLinePressure();   // CRUISING only; the phase engine owns MPC during shifts
     checkLimpMode(target_ratio);
-    checkSafetyShifts();       // auto overrev/lug protection
+    checkSafetyShifts();       // auto overrev/lug protection (highest priority)
+    checkKickdown();           // power-down on hard tip-in (mutually exclusive w/ coast)
+    checkCoastDownSchedule();  // auto downshift while coasting to a stop
 
     // 20ms pressure-update quantizer (ATSG p.80). Sensors + exit checks still run at 1kHz.
     bool ptick = (millis() - _last_pressure_update_ms >= PRESSURE_TICK_MS);
@@ -549,6 +595,11 @@ void ShiftScheduler::update() {
     } else {
         runShiftPhases(time_in_phase_ms, ptick);
     }
+
+    // rusEFI torque-cut: only during a high-load power-up inertia phase (spec §9).
+    _solenoids->setTorqueCut(_current_phase == PHASE_INERTIA &&
+                             _sclass == SC_POWER_UP &&
+                             _load_at_start > TORQUE_CUT_MIN_LOAD);
 
     updateTCC();
 }

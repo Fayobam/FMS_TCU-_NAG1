@@ -97,6 +97,8 @@ class ShiftScheduler {
     void calculateLiveRatio();
     void updateTCC();
     void checkSafetyShifts();
+    void checkCoastDownSchedule();            // auto downshifts while coasting to a stop
+    void checkKickdown();                     // power-down request on hard tip-in
     void checkLimpMode(float target_ratio);
     void checkTpsROC();                       // TPS rate-of-change torque anticipation
     bool checkReverseInhibit();               // RP_LOCK + R-while-moving failsafe (returns true if it owns outputs)

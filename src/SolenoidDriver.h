@@ -59,4 +59,5 @@ class SolenoidDriver {
     void setStandbyProfile(StandbyProfile p);  // SPC/MPC resting duties when not shifting
     void setGarageY4(bool pulsing);            // B2 counter-pressure pulse in Park / lever window
     void crankPulseY3();                       // ~400ms valve-body conditioning pulse at boot
+    void setTorqueCut(bool on);                // rusEFI shift-retard request (power-up inertia)
 };
