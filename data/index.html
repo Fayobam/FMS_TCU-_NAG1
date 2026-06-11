@@ -47,6 +47,8 @@
         .grid-cell { background: var(--bg); border: 1px solid var(--slate-500); color: var(--white); text-align: center; font-size: 0.8rem; border-radius: 4px; padding: 4px; font-family: monospace; }
         .grid-header { background: transparent; border: none; font-weight: bold; color: var(--slate-400); font-size: 0.7rem; display: flex; align-items: center; justify-content: center; }
         input.grid-cell { width: 100%; height: 100%; outline: none; transition: background 0.2s, color 0.2s; }
+        .ep-field { display:flex; flex-direction:column; gap:3px; font-size:0.62rem; color:var(--slate-400); font-weight:700; text-transform:uppercase; letter-spacing:0.04em; }
+        .ep-field input { background: var(--bg); border:1px solid var(--slate-500); color:var(--white); border-radius:6px; padding:6px 8px; font-family:monospace; font-size:0.85rem; }
         input.grid-cell:focus { border-color: var(--cyan) !important; outline: 1px solid var(--cyan); }
         
         .connection-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
@@ -73,7 +75,8 @@
 
     <div class="tabs">
         <button class="tab active" onclick="switchTab('dashboard')">Telemetry</button>
-        <button class="tab" onclick="switchTab('tuner')">Calibration Studio</button>
+        <button class="tab" onclick="switchTab('engine')">Engine Profile</button>
+        <button class="tab" onclick="switchTab('tuner')">Adaptation</button>
         <button class="tab" onclick="switchTab('shift')">Shift View</button>
     </div>
 
@@ -192,6 +195,32 @@
                 <!-- Javascript generates the 4×4 (shift × torque-bin) grid here -->
             </div>
         </div>
+    </main>
+
+    <!-- ENGINE PROFILE TAB -->
+    <main id="tab-engine" class="tab-content glass-panel" style="flex-grow:1;">
+        <div class="tuner-controls">
+            <span style="font-size:0.8rem; color:var(--slate-300); font-weight:700;">Torque Surface — RPM × MAP → Nm</span>
+            <button onclick="requestProfile()">Fetch from TCU</button>
+            <button class="primary" onclick="flashProfile()" style="margin-left:auto;">Flash to Hardware</button>
+        </div>
+        <div style="font-size:0.65rem; color:var(--slate-500); margin-bottom:0.5rem;">
+            Per-engine calibration (NVS). Swap engines by editing these — no recompile. Rows = RPM, columns = MAP (kPa). Bilinear-interpolated.
+        </div>
+        <div class="grid-container" style="margin-bottom:1rem;">
+            <div class="tuner-grid" id="torque-grid" style="grid-template-columns: 90px repeat(8, 64px);"></div>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:0.6rem;">
+            <label class="ep-field">Overrev RPM <input type="number" id="ep-overrev"></label>
+            <label class="ep-field">Lug RPM <input type="number" id="ep-lug"></label>
+            <label class="ep-field">T_max ref (Nm) <input type="number" id="ep-tmax"></label>
+            <label class="ep-field">TPS closed (V) <input type="number" step="0.01" id="ep-tpsC"></label>
+            <label class="ep-field">TPS WOT (V) <input type="number" step="0.01" id="ep-tpsW"></label>
+            <label class="ep-field">MAP @0V (kPa) <input type="number" step="0.1" id="ep-map0"></label>
+            <label class="ep-field">MAP kPa/V <input type="number" step="0.1" id="ep-mapV"></label>
+        </div>
+        <div style="margin-top:0.8rem; font-size:0.7rem; color:var(--slate-400); font-weight:700;">Baseline upshift fill (per shift)</div>
+        <div id="ep-fill" style="display:grid; grid-template-columns:repeat(4,1fr); gap:0.6rem; margin-top:0.4rem;"></div>
     </main>
 
     <!-- SHIFT CHART TAB -->
@@ -316,6 +345,85 @@
         buildGrid();   // build the 4×4 grid once; renderGrid() paints values after a fetch
 
         // ----------------------------------------------------
+        // ENGINE PROFILE  (torque surface RPM×MAP + limits + sensor cal + baseline fill)
+        // ----------------------------------------------------
+        const EP_RPM = 8, EP_MAP = 8;
+        let profile = null;                 // last-fetched profile object
+        let tqInputs = [];
+        const tqGrid = document.getElementById('torque-grid');
+
+        function buildTorqueGrid(rpmBp, mapBp){
+            tqGrid.innerHTML = '<div class="grid-header">RPM↓ MAP→</div>';
+            for(let j=0;j<EP_MAP;j++) tqGrid.innerHTML += `<div class="grid-header">${mapBp[j]}</div>`;
+            for(let i=0;i<EP_RPM;i++){
+                tqGrid.innerHTML += `<div class="grid-header">${rpmBp[i]}</div>`;
+                for(let j=0;j<EP_MAP;j++)
+                    tqGrid.innerHTML += `<input type="number" class="grid-cell" id="tq_${i}_${j}" value="0">`;
+            }
+            tqInputs = [];
+            for(let i=0;i<EP_RPM;i++) for(let j=0;j<EP_MAP;j++)
+                tqInputs.push(document.getElementById(`tq_${i}_${j}`));
+        }
+
+        function buildFillFields(){
+            const labels = ['1→2','2→3','3→4','4→5'];
+            const wrap = document.getElementById('ep-fill');
+            wrap.innerHTML = '';
+            for(let i=0;i<4;i++){
+                wrap.innerHTML += `<div class="ep-field">${labels[i]} fill
+                    <input type="number" id="ep-fillp-${i}" placeholder="P%">
+                    <input type="number" id="ep-fillt-${i}" placeholder="ms"></div>`;
+            }
+        }
+
+        function requestProfile(){ ws.send(JSON.stringify({ cmd: "get_profile" })); }
+
+        function renderProfile(p){
+            profile = p;
+            buildTorqueGrid(p.rpm, p.map);
+            for(let i=0;i<EP_RPM*EP_MAP;i++){
+                tqInputs[i].value = p.torque[i] | 0;
+                const t = p.torque[i]|0, inten = Math.min(t/450, 1);
+                tqInputs[i].style.background = `rgba(251,146,60,${(inten*0.5).toFixed(2)})`;
+                tqInputs[i].style.borderColor = `rgba(251,146,60,${(inten*0.7).toFixed(2)})`;
+            }
+            document.getElementById('ep-overrev').value = p.overrev;
+            document.getElementById('ep-lug').value     = p.lug;
+            document.getElementById('ep-tmax').value    = p.tmax;
+            document.getElementById('ep-tpsC').value    = p.tpsC;
+            document.getElementById('ep-tpsW').value    = p.tpsW;
+            document.getElementById('ep-map0').value    = p.map0;
+            document.getElementById('ep-mapV').value    = p.mapV;
+            buildFillFields();
+            for(let i=0;i<4;i++){
+                document.getElementById(`ep-fillp-${i}`).value = p.fillp[i];
+                document.getElementById(`ep-fillt-${i}`).value = p.fillt[i];
+            }
+        }
+
+        function flashProfile(){
+            if(!profile) return;
+            const torque = tqInputs.map(x => parseInt(x.value)||0);
+            const fillp = [], fillt = [];
+            for(let i=0;i<4;i++){
+                fillp.push(parseInt(document.getElementById(`ep-fillp-${i}`).value)||0);
+                fillt.push(parseInt(document.getElementById(`ep-fillt-${i}`).value)||0);
+            }
+            ws.send(JSON.stringify({ cmd:"set_profile", torque,
+                overrev: parseInt(document.getElementById('ep-overrev').value)||6300,
+                lug:     parseInt(document.getElementById('ep-lug').value)||1100,
+                tmax:    parseInt(document.getElementById('ep-tmax').value)||450,
+                tpsC: parseFloat(document.getElementById('ep-tpsC').value)||0.5,
+                tpsW: parseFloat(document.getElementById('ep-tpsW').value)||2.9,
+                map0: parseFloat(document.getElementById('ep-map0').value)||-10,
+                mapV: parseFloat(document.getElementById('ep-mapV').value)||86,
+                fillp, fillt }));
+            const btn = event.target;
+            btn.innerText = "Flashed!"; btn.style.background = "var(--emerald)";
+            setTimeout(()=>{ btn.innerText="Flash to Hardware"; btn.style.background="var(--cyan)"; }, 2000);
+        }
+
+        // ----------------------------------------------------
         // WEBSOCKET LOGIC (V6.1)
         // ----------------------------------------------------
         const ws = new WebSocket(`ws://${window.location.hostname}/ws`);
@@ -324,7 +432,8 @@
             document.getElementById('connection-dot').className = 'connection-dot conn-live';
             document.getElementById('connection-text').style.color = 'var(--emerald)';
             document.getElementById('connection-text').innerText = 'LIVE';
-            requestCells();   // populate the tuner grid from the TCU's live adaptation cells
+            requestCells();     // adaptation trims
+            requestProfile();   // engine torque table + cal
         };
 
         ws.onclose = () => {
@@ -402,6 +511,9 @@
             else if (data.type === "cell_data") {
                 cellData = data.data.slice();   // flat int8 stream, length 4*4*4*3
                 renderGrid();
+            }
+            else if (data.type === "profile_data") {
+                renderProfile(data);
             }
         };
 
