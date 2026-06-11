@@ -7,6 +7,7 @@
 #include <Arduino.h>
 
 #include "TCU_Data.h"
+#include "EngineProfile.h"
 #include "SolenoidDriver.h"
 #include "SpeedReader.h"
 #include "InputManager.h"
@@ -18,6 +19,7 @@
 // 1. GLOBAL OBJECTS
 // ============================================================================
 TCU_Telemetry telemetry;
+EngineProfile engineProfile;   // per-engine torque table + limits + sensor cal (NVS)
 
 SolenoidDriver solenoids(PIN_MPC, PIN_SPC, PIN_TCC, PIN_Y3, PIN_Y4, PIN_Y5, PIN_RP_LOCK);
 SpeedReader speedReader(PIN_N2_SPEED, PIN_N3_SPEED, PIN_OUT_SPEED, PIN_ENG_SPEED);
@@ -39,6 +41,7 @@ void setup() {
     Serial.begin(115200);
     Serial.println("Booting FMS 722.6 TCU V9 (W5A330 / M111.985 + TVS1320)...");
 
+    engineProfile.begin();   // before inputs (TPS/MAP cal) and scheduler (torque model)
     solenoids.begin();
     speedReader.begin();
     inputManager.begin();

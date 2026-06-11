@@ -3,6 +3,7 @@
 // VERSION: 9.0
 // ============================================================================
 #include "InputManager.h"
+#include "EngineProfile.h"
 
 InputManager::InputManager(uint8_t temp_sensor_pin, uint8_t tps_pin, uint8_t map_pin) {
     _temp_sensor_pin = temp_sensor_pin;
@@ -82,17 +83,19 @@ void InputManager::readPaddles() {
 // THROTTLE + BOOST  (the inputs half the controller was missing)
 // ============================================================================
 void InputManager::readThrottleAndBoost() {
-    // --- TPS ---
+    // --- TPS --- (calibration from the engine profile so swaps need no recompile)
     float tps_v = (analogRead(_tps_pin) / ADC_MAX_TICKS) * ADC_REF_VOLTAGE;
-    float tps_pct = (tps_v - TPS_VOLTS_CLOSED) / (TPS_VOLTS_WOT - TPS_VOLTS_CLOSED) * 100.0f;
+    float tps_closed = engineProfile.tpsClosedV(), tps_wot = engineProfile.tpsWotV();
+    float tps_span = (tps_wot - tps_closed);
+    float tps_pct = (tps_span > 0.01f) ? (tps_v - tps_closed) / tps_span * 100.0f : 0.0f;
     tps_pct = constrain(tps_pct, 0.0f, 100.0f);
     // Exponential moving average (alpha ~0.2) to reject ADC jitter at 1kHz
     _tps_filtered += 0.2f * (tps_pct - _tps_filtered);
     telemetry.tps_pct = _tps_filtered;
 
-    // --- MAP ---
+    // --- MAP --- (transfer function from the engine profile)
     float map_v = (analogRead(_map_pin) / ADC_MAX_TICKS) * ADC_REF_VOLTAGE;
-    float map_kpa = MAP_KPA_AT_0V + (map_v * MAP_KPA_PER_VOLT);
+    float map_kpa = engineProfile.mapAt0V() + (map_v * engineProfile.mapPerV());
     map_kpa = constrain(map_kpa, 20.0f, 260.0f); // sanity clamp
     _map_filtered += 0.2f * (map_kpa - _map_filtered);
     telemetry.map_kpa = _map_filtered;

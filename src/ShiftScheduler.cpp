@@ -5,6 +5,7 @@
 //          centralised beginShift() (no more duplicated off-by-one triggers).
 // ============================================================================
 #include "ShiftScheduler.h"
+#include "EngineProfile.h"
 
 ShiftScheduler::ShiftScheduler(SolenoidDriver* solenoids, AdaptiveMemory* adaptives) {
     _solenoids = solenoids;
@@ -152,7 +153,7 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     // Capture the operating cell NOW, at initiation (torque-binned). Adaptation runs
     // in END — by then RPM/torque have moved, so binning there would mis-attribute.
     _load_at_start = telemetry.load_pct;
-    _torque_bin    = torqueBin(telemetry.map_kpa);
+    _torque_bin    = engineProfile.torqueBin(telemetry.engine_rpm, telemetry.map_kpa);
     _ratio_old     = getTargetRatio(_from_gear);
     _ratio_target  = getTargetRatio(target_gear);
 
@@ -195,15 +196,17 @@ void ShiftScheduler::classifyAndProfile(uint8_t from, uint8_t to, bool is_upshif
     _pd_type = PD_NONE;
     if (is_upshift) {
         _sclass = power ? SC_POWER_UP : SC_COAST_UP;
+        uint8_t  base_fill_p = engineProfile.fillP(idx);   // baseline from the (tunable) engine profile
+        uint16_t base_fill_t = engineProfile.fillT(idx);
         if (power) {
-            _fill_p = (uint8_t)constrain(FILL_P_PCT[idx], 0, 100);
-            _fill_t_ms = FILL_T_MS[idx];
+            _fill_p = (uint8_t)constrain((int)base_fill_p, 0, 100);
+            _fill_t_ms = base_fill_t;
             _apply_pct = (uint8_t)constrain(20.0f + 0.55f * load, 0.0f, 100.0f);
             _inertia_slope = 2.0f + 0.02f * load;                       // %/20ms tick
             _inertia_target_ms = (uint16_t)constrain(400.0f - 1.5f * load, 220.0f, 400.0f);
         } else {
-            _fill_p = (uint8_t)constrain((int)FILL_P_PCT[idx] - 15, 0, 100);
-            _fill_t_ms = (FILL_T_MS[idx] > 20) ? (FILL_T_MS[idx] - 20) : 0;
+            _fill_p = (uint8_t)constrain((int)base_fill_p - 15, 0, 100);
+            _fill_t_ms = (base_fill_t > 20) ? (base_fill_t - 20) : 0;
             _apply_pct = 25;                                           // fixed, gentle
             _inertia_slope = 1.0f;
             _inertia_target_ms = 350;
@@ -254,7 +257,7 @@ void ShiftScheduler::checkSafetyShifts() {
     if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
 
     // --- OVERREV: force an upshift before the engine hits the limiter ---
-    if (telemetry.engine_rpm > RPM_OVERREV_UPSHIFT && telemetry.current_gear < 5) {
+    if (telemetry.engine_rpm > engineProfile.overrevRpm() && telemetry.current_gear < 5) {
         if (beginShift(telemetry.current_gear + 1, true, "OVERREV")) {
             telemetry.last_auto_shift_ms = millis();
             char buf[64];
@@ -269,7 +272,7 @@ void ShiftScheduler::checkSafetyShifts() {
     // Classic case: driver forgot to downshift from 5th at a traffic light.
     // Floor is 2nd — the hydraulic default — so 1st remains driver's choice.
     // The floor also means this never fires after a D-engagement (which starts in 2nd).
-    if (telemetry.engine_rpm < RPM_LUG_THRESHOLD &&
+    if (telemetry.engine_rpm < engineProfile.lugRpm() &&
         telemetry.tps_pct > TPS_LUG_LOAD_PCT &&
         telemetry.current_gear > 2) {
         if (beginShift(telemetry.current_gear - 1, false, "LUG")) {
@@ -532,8 +535,9 @@ void ShiftScheduler::update() {
     calculateLiveRatio();
 
     // Torque estimate is the master input for all pressure/class decisions (ATSG p.77).
-    telemetry.t_est_nm = estimateTorqueNm(telemetry.map_kpa);
-    telemetry.load_pct = torqueLoadPct(telemetry.map_kpa);
+    // From the per-engine torque surface (RPM × MAP), so it ports across engines.
+    telemetry.t_est_nm = engineProfile.estimateTorque(telemetry.engine_rpm, telemetry.map_kpa);
+    telemetry.load_pct = engineProfile.loadPct(telemetry.engine_rpm, telemetry.map_kpa);
 
     TickType_t current_tick = xTaskGetTickCount();
     unsigned long time_in_phase_ms = (current_tick - _phase_start_tick) * portTICK_PERIOD_MS;

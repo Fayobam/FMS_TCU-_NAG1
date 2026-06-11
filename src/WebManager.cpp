@@ -4,6 +4,7 @@
 // UPDATES: Added "limp_reset" command + safety/load fields to telemetry JSON.
 // ============================================================================
 #include "WebManager.h"
+#include "EngineProfile.h"
 
 WebManager::WebManager() : server(80), ws("/ws") {
     _last_broadcast_time = 0;
@@ -47,6 +48,56 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     if (cmd == "limp_reset") {
         telemetry.limp_reset_request = true;   // honoured only when stopped & in P/N
         Serial.println("Limp reset requested via web.");
+        return;
+    }
+
+    // --- Engine profile (torque table + limits + sensor cal + baseline fill) ---
+    if (cmd == "get_profile") {
+        EngineProfileData* p = engineProfile.raw();
+        JsonDocument resp;
+        resp["type"] = "profile_data";
+        JsonArray tq = resp["torque"].to<JsonArray>();
+        for (int i = 0; i < EP_RPM_BINS; i++)
+            for (int j = 0; j < EP_MAP_BINS; j++) tq.add(p->torque[i][j]);
+        JsonArray rb = resp["rpm"].to<JsonArray>();
+        for (int i = 0; i < EP_RPM_BINS; i++) rb.add(p->rpm_bp[i]);
+        JsonArray mb = resp["map"].to<JsonArray>();
+        for (int j = 0; j < EP_MAP_BINS; j++) mb.add(p->map_bp[j]);
+        resp["tmax"] = p->t_max_ref; resp["overrev"] = p->overrev_rpm; resp["lug"] = p->lug_rpm;
+        resp["tpsC"] = p->tps_closed_v; resp["tpsW"] = p->tps_wot_v;
+        resp["map0"] = p->map_kpa_at_0v; resp["mapV"] = p->map_kpa_per_volt;
+        JsonArray fp = resp["fillp"].to<JsonArray>();
+        JsonArray ft = resp["fillt"].to<JsonArray>();
+        for (int i = 0; i < 4; i++) { fp.add(p->fill_p[i]); ft.add(p->fill_t[i]); }
+        char buffer[1280];
+        size_t n = serializeJson(resp, buffer, sizeof(buffer));
+        ws.textAll(buffer, n);
+        return;
+    }
+    else if (cmd == "set_profile") {
+        EngineProfileData* p = engineProfile.raw();
+        JsonArray tq = doc["torque"].as<JsonArray>();
+        if ((int)tq.size() >= EP_RPM_BINS * EP_MAP_BINS) {
+            for (int i = 0; i < EP_RPM_BINS; i++)
+                for (int j = 0; j < EP_MAP_BINS; j++)
+                    p->torque[i][j] = (int16_t)constrain(tq[i*EP_MAP_BINS+j].as<int>(), 0, 1200);
+        }
+        if (doc["overrev"].is<int>()) p->overrev_rpm = (uint16_t)constrain(doc["overrev"].as<int>(), 3000, 9000);
+        if (doc["lug"].is<int>())     p->lug_rpm     = (uint16_t)constrain(doc["lug"].as<int>(), 500, 2500);
+        if (doc["tmax"].is<int>())    p->t_max_ref   = (uint16_t)constrain(doc["tmax"].as<int>(), 100, 1200);
+        if (doc["tpsC"].is<float>())  p->tps_closed_v = doc["tpsC"].as<float>();
+        if (doc["tpsW"].is<float>())  p->tps_wot_v    = doc["tpsW"].as<float>();
+        if (doc["map0"].is<float>())  p->map_kpa_at_0v  = doc["map0"].as<float>();
+        if (doc["mapV"].is<float>())  p->map_kpa_per_volt = doc["mapV"].as<float>();
+        JsonArray fp = doc["fillp"].as<JsonArray>();
+        JsonArray ft = doc["fillt"].as<JsonArray>();
+        if ((int)fp.size() >= 4 && (int)ft.size() >= 4)
+            for (int i = 0; i < 4; i++) {
+                p->fill_p[i] = (uint8_t)constrain(fp[i].as<int>(), 0, 100);
+                p->fill_t[i] = (uint16_t)constrain(ft[i].as<int>(), 0, 400);
+            }
+        engineProfile.save();
+        Serial.println("Engine profile updated via Web!");
         return;
     }
 
