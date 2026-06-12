@@ -64,10 +64,14 @@ PCNT speed sensors (zero missed pulses at 7000+ rpm):
 | N2 (front carrier) | 34 | 60 |
 | N3 (front sun) | 35 | 60 |
 | Output shaft | 32 | 24 |
-| Engine RPM | 23 | 60 (M111 crank) |
+| Engine RPM | 23 | `eng_ppr` (default 60; **web-editable**) |
 
+Engine RPM is frequency-counted over the 50 ms window → resolution ≈ 1200/`eng_ppr` rpm/count
+(60→20, 36→33, 24→50). `eng_ppr` is an EngineProfile field set on the dashboard, so a rusEFI
+tach output or other source needs no recompile — but keep it **≥24** (TCC slip loop + overrev).
 ATF temp + P/N switch multiplexed on pin 39 (>3.0 V = P/N open). TPS pin 36, MAP pin 33
-(both ADC1 — ADC2 dies with WiFi). EMA α=0.2 at 1 kHz.
+(both ADC1 — ADC2 dies with WiFi). All three analog reads use `analogReadMilliVolts()`
+(eFuse-calibrated). EMA α=0.2 at 1 kHz.
 
 ### Turbine kinematics — derived from tooth counts (ATSG p.8, 32–33)
 ```
@@ -203,6 +207,12 @@ Bind via **decel-delta** (output decel during catch minus the pre-catch braking 
 Force open: ROC mode, MAP>105, TPS>45%, RPM<1400/gear-1, and **any shift phase**. Cruise:
 integral lock to 50 rpm slip (max 85%). Forced open before every power-down.
 
+**Rate-limited + 20 ms-quantized (V14.3):** lockup moves only on the pressure ptick —
+`TCC_LOCK_STEP=2`%/tick to apply (0→85% ≈ 850 ms), `TCC_RELEASE_STEP=10`%/tick to release
+(≈200 ms; release always outruns apply so a boost/shift demand to open wins). Held fully open
+for `TCC_POST_SHIFT_HOLD_MS=300` ms after a shift ends (`_tcc_reopen_until_ms`) before lockup
+control resumes — never locks through a ratio change or the END line-decay.
+
 ---
 
 ## 10. rusEFI Torque-Cut (spec §9, optional)
@@ -218,9 +228,10 @@ single biggest "sharp without sacrificing health" lever.
 | Item | File | Status |
 |---|---|---|
 | `K = 1.641` | TCU_Data.h | bench-verify TCC-locked ±20 rpm |
-| MAP rewire (33), engine tach (23) | TCU_Data.h | **hardware** |
-| `MAP_ZERO/K_T/T_MAX` torque model | TCU_Data.h | calibrate to engine/sensor |
-| `tps_closed_v / tps_wot_v` | EngineProfile (NVS) | measure; switch reads to `analogReadMilliVolts` (item 9) |
+| `eng_ppr` (engine-RPM pulses/rev) | EngineProfile (NVS) | set to wired source; **≥24**; scope-verify clean (item 11) |
+| MAP rewire (33), engine tach (23) | TCU_Data.h pins | **hardware** |
+| Torque surface (8×8) + `t_max_ref` | EngineProfile (NVS) | seeded 2.43/450; **validate vs dyno** (item 8) |
+| `tps_closed_v / tps_wot_v` | EngineProfile (NVS) | reads now `analogReadMilliVolts` ✓; **re-measure closed/WOT** |
 | `FILL_P/FILL_T`, profile scalars | TCU_Data.h / ShiftScheduler | bench-tune per class |
 | Coast-down rpm thresholds | TCU_Data.h | tune to final-drive/tyre |
 | RP_LOCK / TORQUE_CUT polarity+enable | TCU_Data.h | verify hardware before enabling |
@@ -246,8 +257,9 @@ single biggest "sharp without sacrificing health" lever.
 AP `FMS_TCU`/`shiftfast` → `http://192.168.4.1`. 100 Hz telemetry (gate corrected from 10 Hz).
 
 Phase 9b is **done**: the tuner now speaks `get_cells`/`set_cells` (Adaptation v2, 4×4×4 cells ×
-3 fields), there's an **Engine Profile** tab (`get_profile`/`set_profile` — 8×8 torque surface +
-limits + sensor cal), and the Shift View phase bands are remapped to the 9-phase enum.
+3 fields), there's an **Engine Profile** tab (`get_profile`/`set_profile` — 8×8 torque surface,
+limits incl. **Engine PPR**, overrev/lug, and sensor cal), and the Shift View phase bands are
+remapped to the 9-phase enum.
 
 Class/torque telemetry (item A-2, **done**): `buildAndSendTelemetryJSON()` emits `tEstNm`,
 `loadPct`, `shiftClass`, `pdType` alongside `phase`/`revAbuse`/`htMode`; the Adaptive Metrics
