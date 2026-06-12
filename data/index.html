@@ -215,7 +215,8 @@
         <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:0.6rem;">
             <label class="ep-field">Overrev RPM <input type="number" id="ep-overrev"></label>
             <label class="ep-field">Lug RPM <input type="number" id="ep-lug"></label>
-            <label class="ep-field">Engine PPR (crank/tach) <input type="number" id="ep-ppr"></label>
+            <label class="ep-field">Engine PPR (pulses/rev) <input type="number" min="1" max="240" id="ep-engPpr"></label>
+            <label class="ep-field">Output PPR (pulses/rev) <input type="number" min="1" max="240" id="ep-outPpr"></label>
             <label class="ep-field">T_max ref (Nm) <input type="number" id="ep-tmax"></label>
             <label class="ep-field">TPS closed (V) <input type="number" step="0.01" id="ep-tpsC"></label>
             <label class="ep-field">TPS WOT (V) <input type="number" step="0.01" id="ep-tpsW"></label>
@@ -392,7 +393,8 @@
             }
             document.getElementById('ep-overrev').value = p.overrev;
             document.getElementById('ep-lug').value     = p.lug;
-            document.getElementById('ep-ppr').value     = p.ppr;
+            document.getElementById('ep-engPpr').value  = p.engPpr;
+            document.getElementById('ep-outPpr').value  = p.outPpr;
             document.getElementById('ep-tmax').value    = p.tmax;
             document.getElementById('ep-tpsC').value    = p.tpsC;
             document.getElementById('ep-tpsW').value    = p.tpsW;
@@ -416,7 +418,8 @@
             ws.send(JSON.stringify({ cmd:"set_profile", torque,
                 overrev: parseInt(document.getElementById('ep-overrev').value)||6300,
                 lug:     parseInt(document.getElementById('ep-lug').value)||1100,
-                ppr:     parseInt(document.getElementById('ep-ppr').value)||60,
+                engPpr:  parseInt(document.getElementById('ep-engPpr').value)||60,
+                outPpr:  parseInt(document.getElementById('ep-outPpr').value)||24,
                 tmax:    parseInt(document.getElementById('ep-tmax').value)||450,
                 tpsC: parseFloat(document.getElementById('ep-tpsC').value)||0.5,
                 tpsW: parseFloat(document.getElementById('ep-tpsW').value)||2.9,

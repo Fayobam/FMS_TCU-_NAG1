@@ -96,39 +96,42 @@ const uint32_t ENGAGE_GRACE_MS        = 1500;   // suppress slip-limp during D-e
 const bool RP_LOCK_ACTIVE_HIGH = true;  // true: drive HIGH to ENGAGE the lock
 const bool ENABLE_RP_LOCK      = true;  // false: never drive the pin (no lock hardware fitted)
 
-// MAP sensor calibration (adjust to YOUR sensor's transfer function)
-// Example: 3-bar GM-style sensor, 0.5V=20kPa, 4.5V=304kPa, scaled to 3.3V ADC
-const float MAP_KPA_AT_0V   = -10.0f;
-const float MAP_KPA_PER_VOLT = 86.0f;
+// (MAP sensor transfer function lives in EngineProfile: map_kpa_at_0v / map_kpa_per_volt,
+//  NVS-backed and web-editable. The old TCU_Data MAP_KPA_* constants were dead copies.)
 
 // TPS rate-of-change torque anticipation (supercharger has no boost lag).
 // Entry: TPS rising faster than TRIGGER → max line pressure + TCC open immediately.
 // Exit: TPS below RELEASE_PCT and ROC below RELEASE for COOLDOWN_MS.
+// ROC is averaged over a TPS_ROC_WINDOW_MS ring (not per-1ms deltas), so post-EMA ADC
+// noise (~0.4%/ms) can no longer false-trigger the mode — the threshold means what it says.
 const float    TPS_ROC_TRIGGER_PCT_MS  = 0.15f;  // %/ms — 15%/100ms triggers (fast stab)
 const float    TPS_ROC_RELEASE_PCT_MS  = 0.02f;  // %/ms — essentially steady state
 const float    TPS_ROC_RELEASE_HOLD    = 40.0f;  // % TPS must be below to start cooldown
 const uint32_t TPS_ROC_COOLDOWN_MS     = 2000;   // ms to hold max pressure after settling
+const uint16_t TPS_ROC_WINDOW_MS       = 20;     // ROC averaging window (ring length)
 
 // --- Adaptive harshness metrics (TUNE ON BENCH against real shift traces) ---
-// Upshift: we cannot measure driveline shock directly (output shaft samples at 20 Hz),
-// so total shift time is the proxy for the "too firm" signal that gives upshift
-// learning a downward path. Without it, flare-only learning ratchets monotonically
-// to +60 % and every cell that ever flares stays maximally firm forever.
-//   flare                              -> pressure +2 (clutch slipped, too soft)
-//   clean + faster than UPSHIFT_FIRM_MS at real load -> pressure -2 (too firm)
-const uint32_t UPSHIFT_FIRM_MS   = 180;  // total upshift quicker than this at load = too firm
 // Downshift: flag bind only for the output drop ATTRIBUTABLE TO THE CATCH CLUTCH,
 // i.e. beyond the vehicle's pre-catch deceleration trend — so routine braking
-// downshifts no longer log false binds and ratchet ds_timing to the +120 cap.
-const float DS_BIND_EXTRA_RPM    = 40.0f; // extra output drop (above braking trend) = real bind
+// downshifts no longer log false binds and ratchet the trims to their caps.
+const float DS_BIND_EXTRA_RPM    = 40.0f; // extra output drop (above decel trend) = real bind
 
-// Speeds refresh at 20 Hz (50 ms PCNT window), but the phase engine runs at 1 kHz.
-// Ratio-DERIVATIVE predicates (sprag dRatio/dt collapse) must be evaluated only when a
-// new speed sample lands, and flatness measured across CONSECUTIVE samples — not per 1 ms
-// (where the frozen ratio makes |Δ| trivially 0). This is the per-sample (50 ms) flat band:
-// the sprag freewheel has caught when the ratio moves less than this between two samples.
-// Tunable on the bench (see open-tuning note); sync band is ±0.05 for reference.
-const float SPRAG_FLAT_RATIO_DELTA = 0.02f;
+// Flare/bind ratio thresholds must hold CONTINUOUSLY for this long before latching, so a
+// single noisy speed sample can never poison the adaptation tables (V10).
+const uint16_t RATIO_EVENT_CONFIRM_MS = 10;
+
+// --- Predictive overrev (auto upshift) ---
+// The forced upshift only unloads the engine after PREP+FILL+part of TORQUE (~250-400ms);
+// at WOT in a low gear the engine gains several hundred rpm in that window. Trigger on
+// PREDICTED rpm (now + roc×lead, capped) so the shift beats the limiter (V10).
+const uint32_t OVERREV_LEAD_MS = 300;    // expected latency from beginShift to clutch bite
+
+// Speeds now refresh at 200 Hz (MCPWM period capture) but the phase engine runs at 1 kHz, so
+// between samples the ratio is still frozen for ~5 ticks. Ratio-DERIVATIVE predicates (sprag
+// dRatio/dt collapse) are evaluated only on a NEW sample (speed_sample_seq edge), flatness
+// measured across CONSECUTIVE samples. This is the per-sample (~5 ms) flat band: the sprag
+// freewheel has caught when the ratio moves less than this between two samples. Bench-tunable.
+const float SPRAG_FLAT_RATIO_DELTA = 0.004f;
 
 // N2/N3 turbine speed blending constant — DERIVED FROM TOOTH COUNTS (ATSG p.8, pp.32-33).
 // Front simple planetary: n2 = front carrier, n3 = front sun, turbine = front ring.
@@ -142,25 +145,11 @@ const float N2_N3_BLEND_K = 1.641f;
 
 // ============================================================================
 // TORQUE ESTIMATION — the master input (ATSG p.77: adaptation is denominated in Nm,
-// not raw TPS). MAP gives absolute, boost-capable manifold pressure; from it we
-// estimate input torque, then a 0-100% load and a 4-wide torque bin for adaptation.
-// M111 2.3 Kompressor @ 1.2 bar: ~300-330 Nm peak, near the W5A330 design ceiling.
+// not raw TPS). Lives in EngineProfile (NVS-backed 8×8 RPM×MAP surface, web-editable,
+// bilinear-interpolated). The old linear MAP→Nm fit and its constants (MAP_ZERO_KPA,
+// K_T_NM_PER_KPA, T_MAX_NM, estimateTorqueNm/torqueLoadPct/torqueBin) were superseded
+// by that surface and removed. The surface is seeded from ~2.43·(map−35), clamp 450.
 // ============================================================================
-const float MAP_ZERO_KPA      = 35.0f;   // closed-throttle manifold pressure
-// Calibrated to the REAL M111+TVS1320 output: ~450 Nm at 1.2 bar boost (~220 kPa abs).
-// K_T = T_MAX/(220-35) = 450/185 ≈ 2.43, so full boost maps to ~100% load (was 1.55/330,
-// which under-read: full boost computed only ~287 Nm = 87% load and never clamped). Line
-// pressure already saturates above 70% load, but the torque-phase SPC apply (20+0.55·load,
-// caps at 75%) and the 4 adaptation torque bins both need the true range to be meaningful.
-const float K_T_NM_PER_KPA    = 2.43f;   // torque slope (~450 Nm at 220 kPa absolute)
-const float T_MAX_NM          = 450.0f;  // real engine peak (gearbox run above its rating)
-inline float estimateTorqueNm(float map_kpa) {
-    return constrain(K_T_NM_PER_KPA * (map_kpa - MAP_ZERO_KPA), 0.0f, T_MAX_NM);
-}
-inline float torqueLoadPct(float map_kpa) { return 100.0f * estimateTorqueNm(map_kpa) / T_MAX_NM; }
-inline uint8_t torqueBin(float map_kpa) {            // 4 bins: 0-25 / 25-50 / 50-75 / 75-100 %
-    return (uint8_t)constrain((int)(torqueLoadPct(map_kpa) / 25.0f), 0, 3);
-}
 
 // ============================================================================
 // SHIFT CLASSIFICATION (ATSG p.77 categories). Latched at beginShift(), never
@@ -176,11 +165,8 @@ const float CLASS_COAST_TPS_PCT  = 5.0f;    // COAST if tps < 5%; between = keep
 const float ADAPT_ATF_MIN_C = 60.0f;
 const float ADAPT_ATF_MAX_C = 105.0f;
 
-// --- Upshift fill calibration (spec §5), indexed by upshift idx ---
-//   0 = 1-2 (K1), 1 = 2-3 (K2), 2 = 3-4 (K3 big drum), 3 = 4-5 (B1).
-// Pressure-% (SPC during fill) and base fill time (ms). Clutch volumes differ.
-const uint8_t  FILL_P_PCT[4] = {  80,  82,  88,  78 };
-const uint16_t FILL_T_MS[4]  = { 140, 150, 180, 130 };
+// (Upshift fill calibration — spec §5, indexed by upshift idx — lives in EngineProfile:
+//  fill_p[]/fill_t[], NVS-backed and web-editable. The old compile-time copies were dead.)
 
 // 20ms pressure-update quantization (ATSG p.80: ETC changes amplitude once per 20ms).
 const uint16_t PRESSURE_TICK_MS = 20;
@@ -219,8 +205,8 @@ struct TCU_Telemetry {
     float output_rpm  = 0.0f;
     float engine_rpm  = 0.0f;
     float live_ratio  = 0.0f;
-    uint32_t speed_sample_seq = 0;   // ++ on each 20 Hz PCNT refresh; lets the 1 kHz phase
-                                     // engine detect a genuinely-new speed sample (B-4)
+    uint32_t speed_sample_seq = 0;   // ++ on each 200 Hz MCPWM speed refresh; lets the 1 kHz
+                                     // phase engine detect a genuinely-new speed sample (B-4)
 
     // --- Engine Load ---
     float tps_pct = 0.0f;

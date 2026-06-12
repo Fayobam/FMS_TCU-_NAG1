@@ -1,55 +1,82 @@
 // ============================================================================
 // FILE: SpeedReader.h
-// VERSION: 2.1
-// UPDATES: Restored ESP32 Hardware PCNT (Pulse Counter) + Kinematic Math.
+// VERSION: 3.0
+// UPDATES: Pulse-PERIOD measurement via MCPWM hardware capture (80MHz timestamps)
+//          replaces PCNT pulse counting. Counting quantized to a fixed
+//          60000/(PPR×window) rpm (±50 rpm at 24 PPR / 50 ms) at ALL speeds —
+//          unusable for the 0.10 flare threshold and the 50 rpm TCC slip target.
+//          Period measurement is sub-rpm across the whole range.
+//
+//          Per channel: ring buffer of edge-to-edge intervals, glitch rejection
+//          (implausibly short intervals dropped in the ISR), full-revolution
+//          rolling average (cancels tooth-spacing error exactly) capped by a
+//          time window (bounds latency at low speed), open-interval clamp
+//          (tracks hard deceleration between edges), zero-speed timeout.
+//
+//          Engine + output PPR come from EngineProfile (NVS, web-tunable) and
+//          hot-apply — no recompile to change a trigger wheel. N2/N3 stay
+//          compile-time: they are OEM 722.6 internals (60 teeth).
 // ============================================================================
 #pragma once
 #include <Arduino.h>
-#include "driver/pulse_cnt.h" // NEW: Updated ESP-IDF 5.x Pulse Counter library
+#include "driver/mcpwm_cap.h"
 #include "TCU_Data.h"
 
-// --- SENSOR CALIBRATION CONSTANTS ---
+// --- SENSOR CALIBRATION CONSTANTS (gearbox-internal, fixed) ---
 const float TEETH_N2 = 60.0f;          // OEM 722.6 Internal N2 Drum
 const float TEETH_N3 = 60.0f;          // OEM 722.6 Internal N3 Drum
-const float TEETH_OUT = 24.0f;         // Custom External Output Shaft Sensor
-// Engine-RPM pulses per rev is now a WEB-EDITABLE engine constant: EngineProfile.eng_ppr
-// (NVS-backed), read live via engineProfile.engPpr(). RPM is frequency-counted over a 50 ms
-// window, so resolution ≈ 1200/PPR rpm per count: 60 PPR = 20 rpm, 36 = 33, 24 = 50, 4 = 300.
-// The TCC slip loop (targets 50 rpm) and overrev both need ≥24 PPR; 2-4 PPR is too coarse.
-// SOURCE OPTIONS (set eng_ppr on the dashboard to match whatever you wire to PIN_ENG_SPEED):
-//   60  = raw M111 crank sensor — but it's a 60-MINUS-2 wheel; the missing-tooth gap makes
-//         this simple counter under-read ~3% and jitter (open item C-11). Level-shift the VR.
-//   24-36 = rusEFI tach output configured to a clean, gap-free PPR (recommended; sidesteps
-//         the 60-2 gap). VERIFY evenly-spaced on a scope at high rpm, and LEVEL-SHIFT the
-//         tach pin to 3.3 V — it is typically 5/12 V open-collector (would damage the GPIO).
-// Cleanest long-term: read RPM from rusEFI over CAN and bypass this pulse path entirely.
+// Output + engine PPR are configurable via EngineProfile (web "Engine Profile" tab).
+
+#define SR_RING_N        64            // intervals per channel (power of two)
+#define SR_RING_MASK     (SR_RING_N - 1)
+const uint32_t SR_AVG_WINDOW_US  = 100000; // max averaging span (bounds low-speed latency)
+const float    SR_ZERO_FLOOR_RPM = 25.0f;  // below this we call it stopped (sets edge timeout)
+const uint32_t SR_ZERO_TIMEOUT_MAX_US = 400000; // hard cap on the no-edge timeout
+
+// Max plausible shaft speeds — intervals implying more are rejected as glitches.
+const float SR_MAX_RPM_N2  = 8500.0f;
+const float SR_MAX_RPM_N3  = 8500.0f;
+const float SR_MAX_RPM_OUT = 9000.0f;  // output in 5th @ 6500 engine ≈ 7800
+const float SR_MAX_RPM_ENG = 8000.0f;
+
+struct SpeedChannel {
+    // --- written by the capture ISR ---
+    volatile uint32_t ring[SR_RING_N]; // closed intervals, capture-timer ticks
+    volatile uint16_t head = 0;        // next write slot
+    volatile uint16_t count = 0;       // valid entries (saturates at SR_RING_N)
+    volatile uint32_t last_cap = 0;    // last accepted edge, capture ticks
+    volatile bool     has_last = false;
+    volatile int64_t  last_edge_us = 0;  // esp_timer time of last accepted edge
+    uint32_t min_period_ticks = 1;     // glitch floor (from max plausible rpm)
+
+    // --- main-loop config/state ---
+    float    ppr = 1.0f;
+    uint16_t full_rev_intervals = 1;   // min(ppr, SR_RING_N) — perfect tooth cancellation
+    int64_t  zero_timeout_us = 250000;
+
+    mcpwm_cap_channel_handle_t cap_chan = NULL;
+};
 
 class SpeedReader {
   private:
-    uint8_t _pin_n2;
-    uint8_t _pin_n3;
-    uint8_t _pin_out;
-    uint8_t _pin_eng;
+    uint8_t _pin_n2, _pin_n3, _pin_out, _pin_eng;
 
-    // NEW: Handles for the updated PCNT driver
-    pcnt_unit_handle_t _pcnt_n2 = NULL;
-    pcnt_unit_handle_t _pcnt_n3 = NULL;
-    pcnt_unit_handle_t _pcnt_out = NULL;
-    pcnt_unit_handle_t _pcnt_eng = NULL;
+    mcpwm_cap_timer_handle_t _cap_timer_g0 = NULL;  // group 0: N2, N3, OUT
+    mcpwm_cap_timer_handle_t _cap_timer_g1 = NULL;  // group 1: ENG
+    uint32_t _cap_res_hz = 80000000;                // actual capture resolution (queried)
 
-    unsigned long _last_read_time;
+    SpeedChannel _n2, _n3, _out, _eng;
 
-    // Internal Raw RPMs
-    float _raw_n2_rpm;
-    float _raw_n3_rpm;
+    unsigned long _last_update_ms = 0;
+    uint16_t _last_eng_ppr = 0, _last_out_ppr = 0;  // hot-apply web PPR changes
 
-    // Helper functions
-    void initPCNT(pcnt_unit_handle_t* unit_handle, uint8_t pin);
+    void initChannel(mcpwm_cap_timer_handle_t timer, SpeedChannel &ch, uint8_t pin);
+    void configChannel(SpeedChannel &ch, float ppr, float max_rpm);
+    float readChannelRPM(SpeedChannel &ch);
     float calculateTurbineRPM(float n2_rpm, float n3_rpm);
 
   public:
     SpeedReader(uint8_t pin_n2, uint8_t pin_n3, uint8_t pin_out, uint8_t pin_eng);
     void begin();
-    
-    void update();
+    void update();   // call every loop; internally gated to 5ms
 };

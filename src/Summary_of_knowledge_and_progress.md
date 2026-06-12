@@ -1,6 +1,6 @@
 # FMS TCU — Master Engineering & Firmware Manual
-**Document Version:** 6.0
-**Firmware Version:** V14+ (ATSG shift-class architecture; post second-pass external review)
+**Document Version:** 7.0
+**Firmware Version:** V15 (V14 ATSG architecture + period-measurement speed sensing + walkthrough fixes)
 **Application:** Mercedes-Benz 722.6 (W5A330 Small NAG)
 **Powertrain:** M111 2.3L + TVS1320 Supercharger (~1.2 bar), engine on rusEFI
 **Status:** Compiles clean; bench-validation pending. Firmware logic now grounded in the
@@ -57,21 +57,26 @@ top of the profile's baselines. See §2.
 
 ## 2. Hardware Sensors
 
-PCNT speed sensors (zero missed pulses at 7000+ rpm):
+**Speed sensing = MCPWM period measurement (V15), NOT pulse counting.** Each channel
+hardware-timestamps rising edges at 80 MHz (MCPWM capture; group 0 = N2/N3/OUT, group 1 = ENG)
+and averages intervals over up to one full revolution (tooth-spacing error cancels exactly),
+capped at a 100 ms span. ISR glitch rejection (implausibly short intervals dropped), zero-speed
+timeout, open-interval decel clamp. Telemetry refreshes at **200 Hz** (was 20 Hz). This is
+**sub-rpm at all speeds** — it eliminates the old ±50 rpm counting quantization that poisoned
+the 0.10 flare threshold and the 50 rpm TCC slip target.
 
-| Signal | Pin | Teeth |
+| Signal | Pin | Pulses/rev |
 |---|---|---|
-| N2 (front carrier) | 34 | 60 |
-| N3 (front sun) | 35 | 60 |
-| Output shaft | 32 | 24 |
+| N2 (front carrier) | 34 | 60 (gearbox internal, fixed) |
+| N3 (front sun) | 35 | 60 (gearbox internal, fixed) |
+| Output shaft | 32 | `out_ppr` (default 24; **web-editable**) |
 | Engine RPM | 23 | `eng_ppr` (default 60; **web-editable**) |
 
-Engine RPM is frequency-counted over the 50 ms window → resolution ≈ 1200/`eng_ppr` rpm/count
-(60→20, 36→33, 24→50). `eng_ppr` is an EngineProfile field set on the dashboard, so a rusEFI
-tach output or other source needs no recompile — but keep it **≥24** (TCC slip loop + overrev).
-ATF temp + P/N switch multiplexed on pin 39 (>3.0 V = P/N open). TPS pin 36, MAP pin 33
-(both ADC1 — ADC2 dies with WiFi). All three analog reads use `analogReadMilliVolts()`
-(eFuse-calibrated). EMA α=0.2 at 1 kHz.
+`eng_ppr`/`out_ppr` are EngineProfile fields set on the dashboard and **hot-applied** by
+SpeedReader without reboot (math-only reconfig) — a rusEFI tach output or new trigger wheel
+needs no recompile. ATF temp + P/N switch multiplexed on pin 39 (>3.0 V = P/N open). TPS pin 36,
+MAP pin 33 (both ADC1 — ADC2 dies with WiFi); analog reads use `analogReadMilliVolts()`
+(eFuse-calibrated) and are round-robined one channel per 1 ms tick. EMA α=0.2.
 
 ### Turbine kinematics — derived from tooth counts (ATSG p.8, 32–33)
 ```
@@ -176,7 +181,9 @@ Bind via **decel-delta** (output decel during catch minus the pre-catch braking 
 
 - **Money-shift guard** on every downshift request: `output_rpm × target_ratio ≤ 6000`
   (per single shift in multi-gear kickdowns).
-- **Overrev** forced upshift >6300 (gears 1–4, overrides manual limit positions).
+- **Overrev** forced upshift, **predictive** (V15): triggers on `engine_rpm + roc×OVERREV_LEAD_MS`
+  (lead capped +400 rpm) so the shift beats the limiter at WOT in a low gear; gears 1–4, overrides
+  manual limit positions.
 - **Lug** forced downshift (RPM<1100, tps>25%, gear>2 floor).
 - **Coast-down scheduler:** output-rpm thresholds 5→4<1900, 4→3<1400, 3→2<900; floor 2nd;
   suppressed while a paddle request is pending.
@@ -298,6 +305,7 @@ panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Tor
 | **V14.2** | **(this doc, v6.0)** Second-pass external review folded in; HANDOFF.md retired into §16 open-items tracker. |
 | **V14.3** | **Review-2 fixes implemented (A+B+C9/C10+D):** TCC rate-limit/quantize + 300 ms post-shift hold; class/torque telemetry on dashboard; Y4 garage→shift takeover; 20 Hz-sample-aware ratio detectors; power-down (PD_TIMED) bind learning; boot de-energized; MPC leads the gate; `analogReadMilliVolts` ADC; edge-triggered paddles; stale-comment/dead-code cleanup. Remaining: C-8/11/12 (bench/dyno/hardware). |
 | **V14.4** | **Engine PPR is web-editable** (EngineProfile `eng_ppr`, default 60; EP_MAGIC→'NAG2'): change the engine-RPM pulses/rev from the Engine Profile tab to match a rusEFI tach output or other source without recompiling. SpeedReader reads `engineProfile.engPpr()` live. **Note: flashing this re-seeds the EngineProfile NVS to defaults** (struct grew) — re-enter any custom torque-surface/cal values after the update. |
+| **V15** | **Cloud "V10 refinement pass" integrated** (was authored on the f9420dd snapshot; semantically re-applied over V14.4 since `git am` would conflict). Headline: **SpeedReader → MCPWM period measurement** (sub-rpm at all speeds, 200 Hz, hot-applied `eng_ppr`/`out_ppr`, ISR glitch reject / zero-speed timeout / open-interval clamp). Plus: predictive overrev (rpm + roc×lead); flare/bind need 10 ms continuous before latching (`RATIO_EVENT_CONFIRM_MS`); bind detection for **all** downshift classes (supersedes V14.3's PD_TIMED-only); PRND 20 ms debounce; staggered ADC (1 channel/tick); engagement latch only on confirmed forward range + gear-resync-from-ratio when engaged rolling; TPS-ROC over a 20 ms window; `out_ppr` web-editable; `begin()` gear=2; TCU_Data dead-code removal (linear torque fit, `MAP_KPA_*`, `UPSHIFT_FIRM_MS`, `FILL_P_PCT/FILL_T_MS`). EP_MAGIC→'NAG3' (re-seeds NVS). Kept from V14: `analogReadMilliVolts`, TCC 300 ms post-shift hold, B-4 sample-gated sprag flat (now driven at 200 Hz). Compiles clean (RAM 14.3%, Flash 85.5%). |
 
 ---
 
@@ -305,6 +313,20 @@ panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Tor
 
 > Source: `Reference/FMS 722.6 TCU — Handoff Note (V14).pdf`. This replaces the old
 > HANDOFF.md. Status legend: ☐ open · ◐ in progress · ✅ done. Update inline as items close.
+
+### V15 (cloud "V10 pass") — integrated, NEEDS BENCH VERIFICATION
+The MCPWM speed-sensing rewrite compiles clean but **cannot be behavior-verified without a
+signal generator** — its capture/averaging/timeout logic is the new foundation everything reads.
+Bench before road:
+- ☐ Verify MCPWM capture rpm vs a signal generator on **all 4 channels** (N2/N3/OUT/ENG),
+  including the **zero-speed timeout** (kill the signal → reading drops to 0 within ~0.25 s).
+- ☐ Verify a **web PPR change** (e.g. OUT 24→48) rescales rpm immediately, no reboot.
+- ☐ Confirm `K=1.641` turbine check still holds TCC-locked ±20 rpm with period measurement.
+- ☐ Verify **predictive overrev** fires in the (overrev−400 … overrev) window under a simulated
+  3000+ rpm/s pull and completes before 6500.
+- ☐ Re-verify TCC ramp (my V14.3 rates: +2/−10 per tick + 300 ms post-shift hold) on a scope.
+- ☐ Sanity-check that `SPRAG_FLAT_RATIO_DELTA=0.004` (now a ~5 ms per-sample band) still detects
+  a real 3→2 sprag catch — retuned from 0.02 when samples went 50 ms→5 ms.
 
 ### A — fix before bench
 - ✅ **1. TCC not rate-limited.** *(done — commit pending)* `updateTCC(ptick)` now moves only on
@@ -323,13 +345,12 @@ panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Tor
 - ✅ **4. 20 Hz ratio vs 1 kHz detectors.** *(done — commit pending)* SpeedReader now bumps
   `speed_sample_seq` on each 50 ms refresh; the phase engine computes a `new_sample` edge and rolls
   `_prev_ratio`/`_ratio_flat` **only on a new sample**, measuring flatness across consecutive
-  samples (`SPRAG_FLAT_RATIO_DELTA=0.02`). The PD_SPRAG catch reads the held `_ratio_flat` instead
-  of the old per-1 ms |Δ|<0.002 (which was trivially true 49/50 iters). PCNT window unchanged
-  (20 ms); level-based exits stay at 1 kHz with the accepted ≤50 ms inherent latency.
-- ✅ **5. Power-down bind learning revived.** *(done — commit pending)* The decel-delta bind metric
-  in `PHASE_CATCH` now fires for `SC_POWER_DOWN && PD_TIMED` as well as coast-down, so
-  `learn()`'s power-down path (apply_trim −2, softer catch) is reachable. PD_SPRAG stays excluded
-  (freewheel-synced, zero clamp = no catch shock to learn).
+  samples. **V15 update:** speeds are now MCPWM-period-measured (sub-rpm) at 200 Hz, so the seq
+  bumps every 5 ms; the per-sample flat band was retuned `SPRAG_FLAT_RATIO_DELTA 0.02→0.004`.
+  The sample-gating is still needed because the 1 kHz loop still outruns the 200 Hz refresh.
+- ✅ **5. Power-down bind learning revived.** *(done; V15 widened)* The decel-delta bind metric in
+  `PHASE_CATCH` now fires for **all** downshift classes (V15, with a 10 ms confirm window),
+  superseding V14.3's PD_TIMED-only restriction — `learn()`'s power-down path is reachable.
 - ✅ **6. Boot pressure de-energized.** *(done — commit pending)* `SolenoidDriver::begin()` now
   commands `setLinePressure(100)`/`setShiftPressure(100)` (inverted-logic = no coil current) so
   the coils aren't held at full current/min pressure through the ~1-2 s SPIFFS+WiFi/crank window.
@@ -347,18 +368,16 @@ panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Tor
   `analogRead/4095·3.3` to `analogReadMilliVolts()` (eFuse-calibrated, linear up top where WOT
   ~2.9 V and the P/N 3.0 V threshold sit). **Still TODO on the bench:** re-measure TPS closed/WOT
   with the calibrated read and write them into EngineProfile.
-- ✅ **10. Paddles edge-triggered.** *(done — commit pending; owner chose one-shift-per-pull)*
-  `readPaddles()` now fires once on the rising edge, requires release to re-arm, `PADDLE_DEBOUNCE_MS=40`.
-  Holding no longer walks gears.
-- ☐ **11. Engine-RPM signal source (decision pending).** *(hardware; PPR now web-editable)* RPM is
-  frequency-counted over a 50 ms window → resolution ≈ 1200/PPR rpm/count; the TCC slip loop
-  (50 rpm target) and overrev need **≥24 PPR** (2–4 PPR is too coarse). **`eng_ppr` is now an
-  EngineProfile field** — set it live on the Engine Profile tab (no recompile) to match the wired
-  source:
-  - **Raw M111 crank** = 60-**minus-2** wheel; the missing-tooth gap makes the simple counter
-    under-read ~3% + jitter. Highest edge fidelity but needs gap-aware handling (not yet coded).
-  - **rusEFI tach output @ 24–36 PPR (recommended)** — clean, gap-free; sidesteps the 60-2 gap
-    AND the VR-conditioning item below. **Scope it even at 7 kHz; level-shift 5/12 V → 3.3 V.**
+- ✅ **10. Paddles edge-triggered.** *(done; V15 debounce 50 ms)* `readPaddles()` fires once on the
+  rising edge, requires release to re-arm, `PADDLE_DEBOUNCE_MS=50`. Holding no longer walks gears.
+- ☐ **11. Engine-RPM signal source (decision pending).** *(hardware; PPR web-editable)* **V15 note:**
+  speed sensing is now **period-measured (MCPWM)**, which is sub-rpm even at low PPR — so the old
+  "≥24 PPR" resolution floor **no longer applies**; more teeth just average a full rev faster at
+  crawl. `eng_ppr`/`out_ppr` are live on the Engine Profile tab. Remaining source decision:
+  - **Raw M111 crank** = 60-**minus-2** wheel; the missing-tooth gap is still **not handled** (the
+    period averager assumes even teeth) → feed a clean gap-free signal, not the raw crank.
+  - **rusEFI tach output (recommended)** — clean, gap-free; sidesteps the 60-2 gap AND the
+    VR-conditioning item. Any PPR works now; **level-shift 5/12 V → 3.3 V.**
   - **CAN RPM (cleanest)** — see item 15.
 - ☐ **12. Hardware rewires already encoded in pins:** *(hardware — no code)* MAP→GPIO33 (ADC1),
   engine tach→GPIO23. RP_LOCK polarity and the GPIO15 torque-cut line (strapping pin; default

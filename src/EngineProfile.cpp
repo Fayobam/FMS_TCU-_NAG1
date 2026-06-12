@@ -41,7 +41,8 @@ void EngineProfile::seedDefaults() {
     d.t_max_ref       = 450;
     d.overrev_rpm     = 6300;
     d.lug_rpm         = 1100;
-    d.eng_ppr         = 60;     // M111 60-tooth crank default; set to your rusEFI tach PPR
+    d.eng_ppr         = 60;     // M111 60-tooth default; use rusEFI's clean tach out, NOT raw 60-2
+    d.out_ppr         = 24;     // current custom output-shaft wheel; 48-60 recommended
 
     d.tps_closed_v    = 0.50f;
     d.tps_wot_v       = 2.90f;

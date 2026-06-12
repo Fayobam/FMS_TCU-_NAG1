@@ -73,16 +73,26 @@ class ShiftScheduler {
     unsigned long _catch_start_ms;
     float    _ds_baseline_decel_rate;
     bool     _harsh_detected;          // upshift inertia too short / decel spike
+    uint16_t _flare_over_ms;           // consecutive ms the flare condition has held
+    uint16_t _bind_over_ms;            // consecutive ms the bind condition has held
 
-    bool  _prev_pn_raw;             // edge-detect for garage shift trigger
+    bool  _prev_pn_raw;             // edge-detect for the engagement (lever) window
     unsigned long _engage_grace_until_ms; // suppress slip-limp during D-engagement sync
+    bool  _gear_resync_pending;     // engaged while rolling → re-classify gear after sync
     char  _prev_prnd;              // edge-detect for reverse selection
     bool  _legit_reverse;         // R was selected while stopped → genuine reverse, allow any speed
 
-    // TPS rate-of-change torque anticipation
-    float         _prev_tps;
+    // TPS rate-of-change torque anticipation (20ms windowed ROC)
+    float         _tps_hist[TPS_ROC_WINDOW_MS];
+    uint8_t       _tps_hist_idx;         // points at the OLDEST sample
+    bool          _tps_hist_primed;
     bool          _high_torque_mode;
     unsigned long _ht_release_start_ms;  // 0 = not in cooldown
+
+    // Engine rpm rate-of-change (rpm/s, EMA-smoothed) for predictive overrev
+    float         _eng_rpm_prev_sample;
+    unsigned long _eng_roc_sample_ms;
+    float         _eng_rpm_per_s;
 
     // Performance bias: floor raised, boost-zone bins (4-8) pushed hard.
     // Adaptive pulls back 2% per bind event — start firm, let it learn down.

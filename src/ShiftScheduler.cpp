@@ -20,19 +20,27 @@ ShiftScheduler::ShiftScheduler(SolenoidDriver* solenoids, AdaptiveMemory* adapti
 
 void ShiftScheduler::begin() {
     _current_phase = PHASE_CRUISING;
-    telemetry.current_gear = 1;
-    telemetry.target_gear = 1;
+    telemetry.current_gear = 2;   // 722.6 hydraulic default (was 1 — cosmetic mismatch)
+    telemetry.target_gear = 2;
     _prev_pn_raw = true;
-    _prev_tps = 0.0f;
+    for (int i = 0; i < TPS_ROC_WINDOW_MS; i++) _tps_hist[i] = 0.0f;
+    _tps_hist_idx = 0;
+    _tps_hist_primed = false;
     _high_torque_mode = false;
     _ht_release_start_ms = 0;
     _engage_grace_until_ms = 0;
+    _gear_resync_pending = false;
     _prev_prnd = 'P';
     _legit_reverse = false;
     _prev_was_power = false;
     _last_pressure_update_ms = millis();
     _spc_cmd = 0.0f;
     _harsh_detected = false;
+    _flare_over_ms = 0;
+    _bind_over_ms = 0;
+    _eng_rpm_prev_sample = 0.0f;
+    _eng_roc_sample_ms = millis();
+    _eng_rpm_per_s = 0.0f;
 }
 
 bool ShiftScheduler::isForwardRange() {
@@ -175,6 +183,8 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     telemetry.flare_detected = false;
     telemetry.bind_detected  = false;
     _harsh_detected = false;
+    _flare_over_ms = 0;
+    _bind_over_ms  = 0;
     _prev_ratio = telemetry.live_ratio;
     _ratio_flat = false;
     _last_speed_seq = telemetry.speed_sample_seq;   // first in-shift sample triggers a fresh delta
@@ -272,11 +282,17 @@ void ShiftScheduler::checkSafetyShifts() {
     if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
 
     // --- OVERREV: force an upshift before the engine hits the limiter ---
-    if (telemetry.engine_rpm > engineProfile.overrevRpm() && telemetry.current_gear < 5) {
+    // PREDICTIVE: the shift only unloads the engine after PREP+FILL+part of TORQUE
+    // (~OVERREV_LEAD_MS); at WOT in a low gear the engine gains several hundred rpm
+    // in that window and a fixed trigger loses to the limiter. Lead is capped at
+    // 400 rpm so a high-ROC pull can't fire absurdly early (window: overrev-400 … overrev).
+    float lead_rpm = constrain(_eng_rpm_per_s * 0.001f * (float)OVERREV_LEAD_MS, 0.0f, 400.0f);
+    if (telemetry.engine_rpm + lead_rpm > engineProfile.overrevRpm() && telemetry.current_gear < 5) {
         if (beginShift(telemetry.current_gear + 1, true, "OVERREV")) {
             telemetry.last_auto_shift_ms = millis();
             char buf[64];
-            snprintf(buf, sizeof(buf), "AUTO UPSHIFT (overrev %d)", (int)telemetry.engine_rpm);
+            snprintf(buf, sizeof(buf), "AUTO UPSHIFT (overrev %d +%d/s)",
+                     (int)telemetry.engine_rpm, (int)_eng_rpm_per_s);
             setSafetyEvent(buf);
             Serial.println(buf);
         }
@@ -395,15 +411,21 @@ void ShiftScheduler::checkLimpMode(float target_ratio) {
 // TPS RATE-OF-CHANGE TORQUE ANTICIPATION
 // TVS supercharger delivers torque with throttle, not with MAP settling.
 // A fast tip-in means torque is arriving NOW — get ahead of it.
+// ROC is averaged over a 20ms ring so single-sample ADC noise (which easily
+// exceeded 0.15%/ms tick-to-tick) cannot false-trigger max-pressure mode.
 // ============================================================================
 void ShiftScheduler::checkTpsROC() {
-    if (!telemetry.drive_engaged) {
-        _prev_tps = telemetry.tps_pct;
+    // Ring: _tps_hist_idx points at the OLDEST sample (the one being replaced).
+    float oldest = _tps_hist[_tps_hist_idx];
+    _tps_hist[_tps_hist_idx] = telemetry.tps_pct;
+    _tps_hist_idx = (uint8_t)((_tps_hist_idx + 1) % TPS_ROC_WINDOW_MS);
+    if (!_tps_hist_primed) {
+        if (_tps_hist_idx == 0) _tps_hist_primed = true;
         return;
     }
+    float roc = (telemetry.tps_pct - oldest) / (float)TPS_ROC_WINDOW_MS;  // %/ms
 
-    float roc = telemetry.tps_pct - _prev_tps;  // %/ms (called at 1kHz)
-    _prev_tps = telemetry.tps_pct;
+    if (!telemetry.drive_engaged) return;
 
     // --- Entry: fast tip-in detected ---
     if (roc > TPS_ROC_TRIGGER_PCT_MS) {
@@ -554,6 +576,15 @@ void ShiftScheduler::update() {
     telemetry.t_est_nm = engineProfile.estimateTorque(telemetry.engine_rpm, telemetry.map_kpa);
     telemetry.load_pct = engineProfile.loadPct(telemetry.engine_rpm, telemetry.map_kpa);
 
+    // Engine rpm rate (rpm/s, EMA-smoothed over 100ms samples) for predictive overrev.
+    if (millis() - _eng_roc_sample_ms >= 100) {
+        float dt_s = (millis() - _eng_roc_sample_ms) * 0.001f;
+        float inst = (telemetry.engine_rpm - _eng_rpm_prev_sample) / dt_s;
+        _eng_rpm_per_s += 0.5f * (inst - _eng_rpm_per_s);
+        _eng_rpm_prev_sample = telemetry.engine_rpm;
+        _eng_roc_sample_ms = millis();
+    }
+
     TickType_t current_tick = xTaskGetTickCount();
     unsigned long time_in_phase_ms = (current_tick - _phase_start_tick) * portTICK_PERIOD_MS;
     float target_ratio = getTargetRatio(telemetry.target_gear);
@@ -582,7 +613,7 @@ void ShiftScheduler::update() {
     bool ptick = (millis() - _last_pressure_update_ms >= PRESSURE_TICK_MS);
     if (ptick) _last_pressure_update_ms = millis();
 
-    // A genuinely-new 20 Hz speed sample landed this tick? Ratio-derivative predicates
+    // A genuinely-new 200 Hz speed sample landed this tick? Ratio-derivative predicates
     // (sprag flat) only advance on new samples; between samples the ratio is frozen (B-4).
     bool new_sample = (telemetry.speed_sample_seq != _last_speed_seq);
     if (new_sample) _last_speed_seq = telemetry.speed_sample_seq;
@@ -590,20 +621,43 @@ void ShiftScheduler::update() {
     if (_current_phase == PHASE_CRUISING) {
         updateStandbyAndGarage();   // SPC/MPC standby duties + Y4 garage window
 
-        // Garage shift: trigger on the FALLING EDGE of the P/N switch (manual valve
-        // leaving P/N), independent of the 4-bit PRND decoder settling.
+        // Engagement window: the FALLING EDGE of the P/N switch means the manual
+        // valve is leaving P/N — open the lever window (Y4 pulse + P/N standby
+        // duties + slip-limp grace) regardless of whether it lands in D or R.
         bool pn_falling_edge = _prev_pn_raw && !telemetry.pn_switch_raw;
         _prev_pn_raw = telemetry.pn_switch_raw;
-        if (pn_falling_edge && !telemetry.drive_engaged) {
+        if (pn_falling_edge) {
+            _engage_grace_until_ms = millis() + ENGAGE_GRACE_MS;
+        }
+        // Drive latch: only once the (debounced) decoder confirms a FORWARD range.
+        // Selecting R no longer latches drive_engaged / asserts gear 2 (it also
+        // enabled TPS-ROC max-line mode in reverse).
+        if (!telemetry.pn_switch_raw && !telemetry.drive_engaged && isForwardRange()) {
             telemetry.drive_engaged = true;
             telemetry.current_gear  = 2;     // 722.6 hydraulic default; 1st is paddle-only
             telemetry.target_gear   = 2;
-            _engage_grace_until_ms = millis() + ENGAGE_GRACE_MS;
+            // Engaged while already rolling (N->D at speed, or a reboot mid-drive
+            // with the shift valves still hydraulically latched in a higher gear):
+            // "2nd" is a guess — re-classify from the live ratio after clutch sync.
+            _gear_resync_pending = (telemetry.output_rpm > OUTPUT_RPM_MOVING);
         }
         if (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N') {
             if (telemetry.drive_engaged) _adaptives->requestFlush();  // persist learning at the stop
             telemetry.drive_engaged = false;
+            _gear_resync_pending = false;
             _prev_pn_raw = true;
+        }
+        if (_gear_resync_pending && millis() >= _engage_grace_until_ms) {
+            _gear_resync_pending = false;
+            uint8_t g = classGearFromRatio();
+            if (g != telemetry.current_gear) {
+                telemetry.current_gear = g;
+                telemetry.target_gear  = g;
+                char buf[64];
+                snprintf(buf, sizeof(buf), "GEAR RESYNC: ratio says %d (engaged at speed)", g);
+                setSafetyEvent(buf);
+                Serial.println(buf);
+            }
         }
 
         if (telemetry.paddle_up_request) {
@@ -662,12 +716,24 @@ void ShiftScheduler::finishShift() {
 void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample) {
     if (ptick && _current_phase != PHASE_END) applyShiftMPC();
 
-    // Ratio derivative is only meaningful across consecutive 20 Hz samples. Recompute the
+    // Ratio derivative is only meaningful across consecutive speed samples. Recompute the
     // "flat" flag (and roll _prev_ratio) ONLY when a fresh sample lands; hold it between
     // samples so the 1 kHz loop reads a stable value instead of a frozen |Δ|=0 (B-4).
     if (new_sample) {
         _ratio_flat = fabsf(telemetry.live_ratio - _prev_ratio) < SPRAG_FLAT_RATIO_DELTA;
         _prev_ratio = telemetry.live_ratio;
+    }
+
+    // Flare = ratio rising above the source gear during FILL/TORQUE (under-fill, clutch
+    // slipping). Must hold RATIO_EVENT_CONFIRM_MS continuously so one bad speed sample
+    // can't latch it and ratchet the adaptation trims (V10).
+    if (_current_phase == PHASE_FILL || _current_phase == PHASE_TORQUE) {
+        if (telemetry.live_ratio > _ratio_old + 0.10f) {
+            if (_flare_over_ms < 60000) _flare_over_ms++;
+        } else {
+            _flare_over_ms = 0;
+        }
+        if (_flare_over_ms >= RATIO_EVENT_CONFIRM_MS) telemetry.flare_detected = true;
     }
 
     switch (_current_phase) {
@@ -682,14 +748,12 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
             break;
 
         case PHASE_FILL:                              // upshift: stroke piston, no ratio movement
-            setSPC(_fill_p);
-            if (telemetry.live_ratio > _ratio_old + 0.10f) telemetry.flare_detected = true; // under-fill
+            setSPC(_fill_p);                          // (flare detection above, confirm-gated)
             if (t >= _fill_t_ms) { _current_phase = PHASE_TORQUE; _phase_start_tick = xTaskGetTickCount(); }
             break;
 
         case PHASE_TORQUE:                            // upshift: oncoming takes torque
             setSPC(_apply_pct);
-            if (telemetry.live_ratio > _ratio_old + 0.10f) telemetry.flare_detected = true;
             if (telemetry.live_ratio < _ratio_old - 0.05f || t >= 250) {
                 _spc_cmd = _apply_pct;
                 _current_phase = PHASE_INERTIA; _phase_start_tick = xTaskGetTickCount();
@@ -739,16 +803,19 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
 
         case PHASE_CATCH:                             // downshift: clamp as sync approaches
             if (ptick) setSPC(_spc_cmd + _catch_slope);
-            // Bind via decel-delta: output decel beyond the pre-catch trend = the catch clutch
-            // grabbing harshly. Applies to coast-down (learns +fill_t) AND power-down PD_TIMED
-            // (learns -apply, softer catch). PD_SPRAG is freewheel-synced with zero commanded
-            // clamp through the speed change — by design there is no catch shock to learn from.
-            if (_sclass == SC_COAST_DOWN ||
-                (_sclass == SC_POWER_DOWN && _pd_type == PD_TIMED)) {
+            // Bind via decel-delta (output decel beyond the pre-catch trend) for ALL
+            // downshift classes — power-down learning was unreachable when this was
+            // coast-only. Confirm-gated like flare so one bad sample can't latch it.
+            {
                 float elapsed = (float)(millis() - _catch_start_ms);
                 float predicted = _ds_baseline_decel_rate * elapsed;
                 float actual = _output_rpm_at_catch_start - telemetry.output_rpm;
-                if ((actual - predicted) > DS_BIND_EXTRA_RPM) telemetry.bind_detected = true;
+                if ((actual - predicted) > DS_BIND_EXTRA_RPM) {
+                    if (_bind_over_ms < 60000) _bind_over_ms++;
+                } else {
+                    _bind_over_ms = 0;
+                }
+                if (_bind_over_ms >= RATIO_EVENT_CONFIRM_MS) telemetry.bind_detected = true;
             }
             if (telemetry.live_ratio >= _ratio_target - 0.05f &&
                 telemetry.live_ratio <= _ratio_target + 0.05f) {

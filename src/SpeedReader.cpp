@@ -1,10 +1,13 @@
 // ============================================================================
 // FILE: SpeedReader.cpp
-// VERSION: 2.1
-// UPDATES: Merged 722.6 Kinematics with zero-overhead ESP32 PCNT drivers.
+// VERSION: 3.0
+// UPDATES: MCPWM-capture period measurement (see header). ISR work is minimal:
+//          one delta, one plausibility compare, one ring write. All averaging
+//          happens in update() on Core 1 task context.
 // ============================================================================
 #include "SpeedReader.h"
-#include "EngineProfile.h"   // engine-RPM PPR is a web-editable engine constant now
+#include "EngineProfile.h"
+#include "esp_timer.h"
 
 SpeedReader::SpeedReader(uint8_t pin_n2, uint8_t pin_n3, uint8_t pin_out, uint8_t pin_eng) {
     _pin_n2 = pin_n2;
@@ -13,85 +16,176 @@ SpeedReader::SpeedReader(uint8_t pin_n2, uint8_t pin_n3, uint8_t pin_out, uint8_
     _pin_eng = pin_eng;
 }
 
-void SpeedReader::initPCNT(pcnt_unit_handle_t* unit_handle, uint8_t pin) {
-    // 1. Configure the PCNT Unit
-    pcnt_unit_config_t unit_config = {};
-    unit_config.high_limit = 32767;
-    unit_config.low_limit = -1;
-    pcnt_new_unit(&unit_config, unit_handle);
+// ----------------------------------------------------------------------------
+// Capture ISR — hardware-timestamped rising edge. Glitch policy: an interval
+// shorter than the channel's plausibility floor is discarded WITHOUT advancing
+// last_cap, so a noise edge splits one real interval into (rejected tiny) +
+// (remainder = real) instead of injecting a huge rpm spike.
+// ----------------------------------------------------------------------------
+static bool IRAM_ATTR onCaptureISR(mcpwm_cap_channel_handle_t chan,
+                                   const mcpwm_capture_event_data_t *edata,
+                                   void *user_ctx) {
+    SpeedChannel *ch = (SpeedChannel *)user_ctx;
+    uint32_t now = edata->cap_value;
 
-    // 2. Configure the Hardware Glitch Filter (~1.2us)
-    pcnt_glitch_filter_config_t filter_config = {};
-    filter_config.max_glitch_ns = 1200;
-    pcnt_unit_set_glitch_filter(*unit_handle, &filter_config);
+    if (!ch->has_last) {
+        ch->last_cap = now;
+        ch->has_last = true;
+        ch->last_edge_us = esp_timer_get_time();
+        return false;
+    }
 
-    // 3. Configure the PCNT Channel
-    pcnt_chan_config_t chan_config = {};
-    chan_config.edge_gpio_num = pin;
-    chan_config.level_gpio_num = -1; // Not used
-    pcnt_channel_handle_t pcnt_chan = NULL;
-    pcnt_new_channel(*unit_handle, &chan_config, &pcnt_chan);
+    uint32_t delta = now - ch->last_cap;          // uint32 wrap-safe
+    if (delta < ch->min_period_ticks) return false;  // glitch — drop the edge
 
-    // 4. Set Edge Actions: Count UP on rising edge, ignore falling edge
-    pcnt_channel_set_edge_action(pcnt_chan, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_HOLD);
+    ch->ring[ch->head] = delta;
+    ch->head = (ch->head + 1) & SR_RING_MASK;
+    if (ch->count < SR_RING_N) ch->count = ch->count + 1;
+    ch->last_cap = now;
+    ch->last_edge_us = esp_timer_get_time();
+    return false;
+}
 
-    // 5. Enable and Start
-    pcnt_unit_enable(*unit_handle);
-    pcnt_unit_clear_count(*unit_handle);
-    pcnt_unit_start(*unit_handle);
+void SpeedReader::initChannel(mcpwm_cap_timer_handle_t timer, SpeedChannel &ch, uint8_t pin) {
+    mcpwm_capture_channel_config_t cconf = {};
+    cconf.gpio_num = pin;
+    cconf.prescale = 1;
+    cconf.flags.pos_edge = true;
+    cconf.flags.neg_edge = false;
+    cconf.flags.pull_up  = false;
+    ESP_ERROR_CHECK(mcpwm_new_capture_channel(timer, &cconf, &ch.cap_chan));
+
+    mcpwm_capture_event_callbacks_t cbs = {};
+    cbs.on_cap = onCaptureISR;
+    ESP_ERROR_CHECK(mcpwm_capture_channel_register_event_callbacks(ch.cap_chan, &cbs, &ch));
+    ESP_ERROR_CHECK(mcpwm_capture_channel_enable(ch.cap_chan));
+}
+
+// PPR-dependent math: glitch floor, full-rev window, zero-speed timeout.
+// Cheap (no hardware touch) so web PPR edits hot-apply from update().
+void SpeedReader::configChannel(SpeedChannel &ch, float ppr, float max_rpm) {
+    ch.ppr = (ppr >= 1.0f) ? ppr : 1.0f;
+    ch.full_rev_intervals = (uint16_t)constrain((int)(ch.ppr + 0.5f), 1, SR_RING_N);
+    // floor: period of one tooth at max plausible rpm
+    float max_tooth_hz = (max_rpm / 60.0f) * ch.ppr;
+    ch.min_period_ticks = (uint32_t)((float)_cap_res_hz / max_tooth_hz);
+    // timeout: period of one tooth at the zero-speed floor, capped
+    float floor_tooth_hz = (SR_ZERO_FLOOR_RPM / 60.0f) * ch.ppr;
+    int64_t to = (int64_t)(1000000.0f / floor_tooth_hz);
+    ch.zero_timeout_us = (to > (int64_t)SR_ZERO_TIMEOUT_MAX_US) ? SR_ZERO_TIMEOUT_MAX_US : to;
 }
 
 void SpeedReader::begin() {
-    // Initialize the 4 hardware PCNT units using the new API
-    initPCNT(&_pcnt_n2, _pin_n2);
-    initPCNT(&_pcnt_n3, _pin_n3);
-    initPCNT(&_pcnt_out, _pin_out);
-    initPCNT(&_pcnt_eng, _pin_eng);
+    // One capture timer per MCPWM group; ESP32 classic = 2 groups × 3 channels.
+    // Group 0 carries N2/N3/OUT, group 1 carries ENG.
+    mcpwm_capture_timer_config_t tconf = {};
+    tconf.group_id = 0;
+    tconf.clk_src  = MCPWM_CAPTURE_CLK_SRC_DEFAULT;
+    ESP_ERROR_CHECK(mcpwm_new_capture_timer(&tconf, &_cap_timer_g0));
+    tconf.group_id = 1;
+    ESP_ERROR_CHECK(mcpwm_new_capture_timer(&tconf, &_cap_timer_g1));
+    ESP_ERROR_CHECK(mcpwm_capture_timer_get_resolution(_cap_timer_g0, &_cap_res_hz));
 
-    _last_read_time = millis();
-    Serial.println("Speed Reader V2.2 Initialized (ESP-IDF 5.x PCNT + Kinematics).");
+    initChannel(_cap_timer_g0, _n2,  _pin_n2);
+    initChannel(_cap_timer_g0, _n3,  _pin_n3);
+    initChannel(_cap_timer_g0, _out, _pin_out);
+    initChannel(_cap_timer_g1, _eng, _pin_eng);
+
+    ESP_ERROR_CHECK(mcpwm_capture_timer_enable(_cap_timer_g0));
+    ESP_ERROR_CHECK(mcpwm_capture_timer_start(_cap_timer_g0));
+    ESP_ERROR_CHECK(mcpwm_capture_timer_enable(_cap_timer_g1));
+    ESP_ERROR_CHECK(mcpwm_capture_timer_start(_cap_timer_g1));
+
+    _last_eng_ppr = engineProfile.engPpr();
+    _last_out_ppr = engineProfile.outPpr();
+    configChannel(_n2,  TEETH_N2,      SR_MAX_RPM_N2);
+    configChannel(_n3,  TEETH_N3,      SR_MAX_RPM_N3);
+    configChannel(_out, _last_out_ppr, SR_MAX_RPM_OUT);
+    configChannel(_eng, _last_eng_ppr, SR_MAX_RPM_ENG);
+
+    _last_update_ms = millis();
+    Serial.printf("Speed Reader V3.0 (MCPWM period capture @ %lu Hz; ENG %u PPR, OUT %u PPR).\n",
+                  (unsigned long)_cap_res_hz, _last_eng_ppr, _last_out_ppr);
+}
+
+// ----------------------------------------------------------------------------
+// Average the newest intervals: walk back from head until we have a full
+// revolution (tooth-spacing error cancels exactly — same tooth set every rev)
+// OR the span exceeds SR_AVG_WINDOW_US (bounds latency during hard decel/crawl).
+// The still-open interval (time since the last edge) clamps the result downward
+// so a hard stop reads down between edges instead of holding the last speed.
+// ----------------------------------------------------------------------------
+float SpeedReader::readChannelRPM(SpeedChannel &ch) {
+    int64_t now_us = esp_timer_get_time();
+
+    // Zero-speed: no edge for longer than one tooth at the floor rpm.
+    if (!ch.has_last || (now_us - ch.last_edge_us) > ch.zero_timeout_us) {
+        ch.has_last = false;     // restart cleanly; stale intervals must not resurface
+        ch.count = 0;
+        return 0.0f;
+    }
+
+    // Snapshot ISR state. The ISR runs on this same core, so it can only run
+    // between our instructions — copy indices first, then the entries.
+    uint16_t head, count;
+    portDISABLE_INTERRUPTS();
+    head  = ch.head;
+    count = ch.count;
+    portENABLE_INTERRUPTS();
+    if (count == 0) return 0.0f;
+
+    uint32_t window_ticks = (uint32_t)(((uint64_t)SR_AVG_WINDOW_US * _cap_res_hz) / 1000000ULL);
+    uint64_t span = 0;
+    uint16_t k = 0;
+    while (k < count && k < ch.full_rev_intervals) {
+        uint16_t idx = (uint16_t)((head - 1 - k) & SR_RING_MASK);
+        uint32_t iv = ch.ring[idx];
+        if (k > 0 && span + iv > window_ticks) break;   // keep ≥1 interval, cap the span
+        span += iv;
+        k++;
+    }
+    if (k == 0 || span == 0) return 0.0f;
+
+    float avg_ticks = (float)span / (float)k;
+    float rpm = (60.0f * (float)_cap_res_hz) / (ch.ppr * avg_ticks);
+
+    // Open-interval clamp: if the gap since the last edge already exceeds the
+    // average interval, the shaft has slowed — believe the open gap instead.
+    float open_us = (float)(now_us - ch.last_edge_us);
+    float avg_us  = avg_ticks * (1000000.0f / (float)_cap_res_hz);
+    if (open_us > avg_us) {
+        float rpm_open = 60.0f * 1000000.0f / (ch.ppr * open_us);
+        if (rpm_open < rpm) rpm = rpm_open;
+    }
+    return rpm;
 }
 
 // ============================================================================
-// 722.6 PLANETARY KINEMATICS (The "Magic" Math)
+// 722.6 PLANETARY KINEMATICS
 // ============================================================================
 float SpeedReader::calculateTurbineRPM(float n2_rpm, float n3_rpm) {
     // NAG52 unified formula — one expression, all gears, no gear-position dependency:
-    //   turbine = (N2 * K) - (N3 * (K-1))   K = N2_N3_BLEND_K = 1.641 (tooth-derived, small NAG)
-    // Verify: N3=0 (gears 1&5) → N2*1.641; N2=N3 (3rd gear direct) → N2*1.0 ✓
-    // Prior code had N2/N3 swapped → negative turbine RPM in 1st gear.
+    //   turbine = (N2 * K) - (N3 * (K-1))   K = N2_N3_BLEND_K (1.641, tooth-derived, small NAG)
+    // Verify: N3=0 (gears 1&5) → N2*K; N2=N3 (3rd gear direct) → N2*1.0 ✓
     float turbine = (n2_rpm * N2_N3_BLEND_K) - (n3_rpm * (N2_N3_BLEND_K - 1.0f));
     return fmaxf(0.0f, turbine);
 }
 
 void SpeedReader::update() {
-    unsigned long current_time = millis();
-    unsigned long delta_time = current_time - _last_read_time;
+    unsigned long now = millis();
+    if (now - _last_update_ms < 5) return;   // 200 Hz refresh (was 20 Hz with counting)
+    _last_update_ms = now;
 
-    if (delta_time >= 50) { // Update every 50ms
-        int pulses_n2 = 0, pulses_n3 = 0, pulses_out = 0, pulses_eng = 0;
+    // Hot-apply PPR edits from the web tuner (math-only reconfig, no hardware touch).
+    uint16_t eng_ppr = engineProfile.engPpr(), out_ppr = engineProfile.outPpr();
+    if (eng_ppr != _last_eng_ppr) { configChannel(_eng, eng_ppr, SR_MAX_RPM_ENG); _last_eng_ppr = eng_ppr; }
+    if (out_ppr != _last_out_ppr) { configChannel(_out, out_ppr, SR_MAX_RPM_OUT); _last_out_ppr = out_ppr; }
 
-        // 1. Grab hardware counts and instantly clear them
-        pcnt_unit_get_count(_pcnt_n2, &pulses_n2);  pcnt_unit_clear_count(_pcnt_n2);
-        pcnt_unit_get_count(_pcnt_n3, &pulses_n3);  pcnt_unit_clear_count(_pcnt_n3);
-        pcnt_unit_get_count(_pcnt_out, &pulses_out); pcnt_unit_clear_count(_pcnt_out);
-        pcnt_unit_get_count(_pcnt_eng, &pulses_eng); pcnt_unit_clear_count(_pcnt_eng);
+    float n2 = readChannelRPM(_n2);
+    float n3 = readChannelRPM(_n3);
+    telemetry.output_rpm  = readChannelRPM(_out);
+    telemetry.engine_rpm  = readChannelRPM(_eng);
+    telemetry.turbine_rpm = calculateTurbineRPM(n2, n3);
 
-        // 2. Convert pulses to Raw RPM using Calibration Constants
-        // Formula: (Pulses / Teeth) * (60000ms / delta_time_ms)
-        _raw_n2_rpm = (pulses_n2 / TEETH_N2) * (60000.0f / delta_time); 
-        _raw_n3_rpm = (pulses_n3 / TEETH_N3) * (60000.0f / delta_time);
-        
-        telemetry.output_rpm = (pulses_out / TEETH_OUT) * (60000.0f / delta_time);
-        telemetry.engine_rpm = (pulses_eng / (float)engineProfile.engPpr()) * (60000.0f / delta_time);
-
-        // 3. Run planetary kinematics to find true Turbine Input Speed
-        telemetry.turbine_rpm = calculateTurbineRPM(_raw_n2_rpm, _raw_n3_rpm);
-
-        // Constrain to prevent random math drops below 0
-        if (telemetry.turbine_rpm < 0) telemetry.turbine_rpm = 0;
-
-        telemetry.speed_sample_seq++;   // signal the phase engine that a fresh sample landed (B-4)
-        _last_read_time = current_time;
-    }
+    telemetry.speed_sample_seq++;   // signal the 1kHz phase engine that a fresh sample landed (B-4)
 }

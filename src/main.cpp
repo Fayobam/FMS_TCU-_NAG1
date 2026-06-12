@@ -1,8 +1,9 @@
 // ============================================================================
 // FILE: main.cpp
-// VERSION: 8.0
-// UPDATES: InputManager now receives TPS + MAP pins. Otherwise unchanged
-//          dual-core FreeRTOS architecture.
+// VERSION: 9.0
+// UPDATES: SpeedReader is now period-based (MCPWM capture) and self-gates to
+//          200Hz — called every loop, no more 50ms counting window. InputManager
+//          owns all its sampling internally (staggered ADC round-robin).
 // ============================================================================
 #include <Arduino.h>
 
@@ -65,17 +66,10 @@ void loop() {
 void core1PhysicsTask(void *pvParameters) {
     const TickType_t xFrequency = 1;
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    uint8_t speed_update_counter = 0;
 
     while (true) {
-        inputManager.update();              // PRND + paddles + TPS + MAP
-        inputManager.updateAnalogSensors(); // temp + raw P/N
-
-        speed_update_counter++;
-        if (speed_update_counter >= 50) {
-            speedReader.update();
-            speed_update_counter = 0;
-        }
+        inputManager.update();     // PRND + paddles + one ADC channel (round-robin)
+        speedReader.update();      // period-capture readout, self-gated to 200Hz
 
         shiftScheduler.update();   // owns standby/garage Y4 windowing now (ATSG-correct)
 
