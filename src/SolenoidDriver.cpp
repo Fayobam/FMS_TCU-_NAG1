@@ -28,9 +28,13 @@ void SolenoidDriver::begin() {
     pinMode(PIN_TORQUE_CUT, OUTPUT);
     setTorqueCut(false);
 
-    setLinePressure(0);
-    setShiftPressure(0);
-    setTCC(0);
+    // Boot DE-ENERGIZED. These are inverted-logic (pressure-% API: 100 = no coil current =
+    // native max pressure). Commanding 0 here would hold both coils at FULL current with
+    // minimum pressure for the whole SPIFFS+WiFi setup window (~1-2s, possibly during crank).
+    // The scheduler's first standby call takes over once the loop starts.
+    setLinePressure(100);
+    setShiftPressure(100);
+    setTCC(0);                  // normal logic: 0 = converter unlocked (correct at boot)
     stopAllShiftSolenoids();
     crankPulseY3();             // condition the 1-2/4-5 valve during the boot/crank window
 }
@@ -65,10 +69,18 @@ void SolenoidDriver::fireShiftSolenoid(uint8_t requested_pin) {
     else if (requested_pin == _y4.pin) target = &_y4;
     else if (requested_pin == _y5.pin) target = &_y5;
 
-    if (target != nullptr && target->state == STATE_OFF) {
+    if (target == nullptr) return;
+
+    // A garage-owned Y4 sits in STATE_HOLDING at the ~37% B2 counter-pressure pulse.
+    // A real 3-4 shift routes through Y4 and MUST take it over — kick from holding,
+    // not be silently blocked (else the shift never happens hydraulically and the gear
+    // label drifts until limp catches it). The shift now owns Y4; garage ownership clears.
+    bool garage_held = (target == &_y4 && _y4_garage_owned);
+    if (target->state == STATE_OFF || garage_held) {
         ledcWrite(target->pin, 212);    // ~83% kick to snap valve open
         target->kick_start_tick = xTaskGetTickCount();
         target->state = STATE_KICKING;
+        if (garage_held) _y4_garage_owned = false;   // shift took Y4 over from the garage pulse
     }
 }
 
@@ -121,7 +133,6 @@ void SolenoidDriver::setTorqueCut(bool on) {
 void SolenoidDriver::crankPulseY3() {
     ledcWrite(_y3.pin, 102);    // ~40% duty
     _y3.state = STATE_HOLDING;  // block an accidental fire during the pulse
-    _y4_garage_owned = false;
     _crank_active = true;
     _crank_start_tick = xTaskGetTickCount();
 }

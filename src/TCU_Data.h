@@ -48,9 +48,9 @@ const uint8_t PIN_SHIFT_D = 5;
 // ============================================================================
 // 2. TRANSMISSION CONSTANTS
 // ============================================================================
-// Select the correct set for your gearbox variant.
-// The front simple planetary is identical in both variants, so N2_N3_BLEND_K=1.61
-// applies to both — only these ratio constants and prefill defaults differ.
+// Select the correct set for your gearbox variant. N2_N3_BLEND_K is NOT shared — it is
+// tooth-derived and differs per variant (1.641 small NAG / 1.630 large NAG; see below).
+// Only the ratio constants and prefill defaults change in this block.
 //
 // W5A330  Small NAG  (330 Nm rated) — C-class 4-cyl/6-cyl, THIS BUILD (W203 C230K)
 const float RATIO_1ST = 3.932f;
@@ -122,6 +122,14 @@ const uint32_t UPSHIFT_FIRM_MS   = 180;  // total upshift quicker than this at l
 // downshifts no longer log false binds and ratchet ds_timing to the +120 cap.
 const float DS_BIND_EXTRA_RPM    = 40.0f; // extra output drop (above braking trend) = real bind
 
+// Speeds refresh at 20 Hz (50 ms PCNT window), but the phase engine runs at 1 kHz.
+// Ratio-DERIVATIVE predicates (sprag dRatio/dt collapse) must be evaluated only when a
+// new speed sample lands, and flatness measured across CONSECUTIVE samples — not per 1 ms
+// (where the frozen ratio makes |Δ| trivially 0). This is the per-sample (50 ms) flat band:
+// the sprag freewheel has caught when the ratio moves less than this between two samples.
+// Tunable on the bench (see open-tuning note); sync band is ±0.05 for reference.
+const float SPRAG_FLAT_RATIO_DELTA = 0.02f;
+
 // N2/N3 turbine speed blending constant — DERIVED FROM TOOTH COUNTS (ATSG p.8, pp.32-33).
 // Front simple planetary: n2 = front carrier, n3 = front sun, turbine = front ring.
 //   n_turbine = n2*(1 + Zs/Zr) - n3*(Zs/Zr)   so K = 1 + Zs/Zr,  (K-1) = Zs/Zr
@@ -177,6 +185,13 @@ const uint16_t FILL_T_MS[4]  = { 140, 150, 180, 130 };
 // 20ms pressure-update quantization (ATSG p.80: ETC changes amplitude once per 20ms).
 const uint16_t PRESSURE_TICK_MS = 20;
 
+// --- TCC lockup rate limits (per 20ms ptick) ---
+// The clutch must apply gently but release fast: a boost/shift demand to OPEN always
+// wins the race. +2%/tick lock = 0->85% in ~850ms; -10%/tick release = full dump in ~200ms.
+const int      TCC_LOCK_STEP        = 2;     // % per ptick while locking up
+const int      TCC_RELEASE_STEP     = 10;    // % per ptick while opening
+const uint16_t TCC_POST_SHIFT_HOLD_MS = 300; // keep TCC fully open this long after a shift ends
+
 // --- Coast-down auto scheduler (spec §4.5) — output-shaft RPM thresholds ---
 // Each catch lands at an idle-friendly turbine speed. Floor is 2nd (owner's
 // 2nd-gear-launch model); 1st stays the driver's choice. 24-tooth output reluctor.
@@ -204,6 +219,8 @@ struct TCU_Telemetry {
     float output_rpm  = 0.0f;
     float engine_rpm  = 0.0f;
     float live_ratio  = 0.0f;
+    uint32_t speed_sample_seq = 0;   // ++ on each 20 Hz PCNT refresh; lets the 1 kHz phase
+                                     // engine detect a genuinely-new speed sample (B-4)
 
     // --- Engine Load ---
     float tps_pct = 0.0f;
@@ -262,7 +279,8 @@ struct TCU_Telemetry {
     bool high_torque_mode = false;
 
     // --- Current shift phase (broadcast to dashboard for chart) ---
-    uint8_t shift_phase = 0; // mirrors ShiftPhase enum: 0=CRUISING … 7=COMPLETION
+    uint8_t shift_phase = 0; // mirrors ShiftPhase: 0=CRUISING 1=PREP 2=FILL 3=TORQUE 4=INERTIA
+                             //                    5=RELEASE 6=CATCH 7=LOCK 8=END
 
     // --- Shift classification & torque (ATSG class-based architecture) ---
     float   t_est_nm     = 0.0f;  // estimated input torque (Nm)

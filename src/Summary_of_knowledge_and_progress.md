@@ -1,11 +1,17 @@
 # FMS TCU — Master Engineering & Firmware Manual
-**Document Version:** 5.0
-**Firmware Version:** V14 (ATSG-grounded shift-class architecture)
+**Document Version:** 6.0
+**Firmware Version:** V14+ (ATSG shift-class architecture; post second-pass external review)
 **Application:** Mercedes-Benz 722.6 (W5A330 Small NAG)
 **Powertrain:** M111 2.3L + TVS1320 Supercharger (~1.2 bar), engine on rusEFI
 **Status:** Compiles clean; bench-validation pending. Firmware logic now grounded in the
 ATSG 722.6 Technical Service Information (2004) via the architecture spec in
 `Reference/722.6_SHIFT_CLASS_ARCHITECTURE_SPEC.md.pdf`.
+
+> **This is the single source of truth.** The old split between this manual and a separate
+> `HANDOFF.md` is retired — `HANDOFF.md` was deleted at v6.0; everything (architecture +
+> live status + open items) lives here now. The latest external review (second pass,
+> post-V14) is archived at `Reference/FMS 722.6 TCU — Handoff Note (V14).pdf`; its findings
+> are folded into §16 as the working open-items tracker.
 
 > **For reviewers:** §1 is the executive architecture. §12 (safety) and §16 (open
 > questions) are the audit surface. The design goal is **sharp, confident shifts without
@@ -24,6 +30,11 @@ safety, standby/garage. **Core 0 (100 Hz):** WebSocket telemetry + deferred NVS 
 The shift engine is **one class-parameterised phase machine**. Every shift is classified
 once at `beginShift()` from latched **torque** (not raw TPS) and runs the profile for its
 class. Pressure commands are quantised to **20 ms** (ATSG p.80); exit predicates run at 1 kHz.
+
+Torque is read from a **per-engine `EngineProfile`** (8×8 RPM×MAP surface, bilinear, NVS-backed
+and web-editable — `EngineProfile.h/.cpp`), so an engine swap is a data change, not a recompile.
+Gearbox-side constants (ratios, K=1.641) stay compile-time; the learned adaptation trims sit on
+top of the profile's baselines. See §2.
 
 **Four shift classes** (ATSG p.77 adaptation categories):
 
@@ -66,12 +77,21 @@ Small NAG: sun 50T, ring 78T → K = 1.6410   (Large NAG 58/92 → 1.6304)
 N3=0 (gears 1&5) → N2·1.641; N2=N3 (3rd) → N2·1.0. **Bench-verify TCC-locked: ±20 rpm.**
 
 ### Torque estimation — the master input (ATSG p.77)
-```
-T_est_nm = clamp(K_T·(map_kpa − MAP_ZERO), 0, T_MAX)   load_pct = 100·T_est/T_MAX
-M111 Kompressor: MAP_ZERO=35 kPa, K_T=1.55 Nm/kPa, T_MAX=330 Nm
-```
+
+Torque now comes from the **`EngineProfile` 8×8 RPM×MAP surface** (bilinear interpolation),
+which can represent a curved NA or boosted torque curve — superseding the old single linear
+`K_T·(map−MAP_ZERO)` fit. `load_pct = 100·T_est / t_max_ref`, where `t_max_ref` ≈ clutch
+capacity (the reference all pressure maps scale against).
+
+The surface is **seeded** from the linear model in `TCU_Data.h` —
+`MAP_ZERO=35 kPa, K_T=2.43 Nm/kPa, T_MAX=450 Nm` (calibrated to the real ~450 Nm @ 1.2 bar;
+NOT the old 1.55/330). Note the W5A330 is rated 330 Nm, so ~450 Nm is ~36% over rating — the
+firm holding-pressure floor and high line authority at load are deliberate; treat ATF service
+as part of the strategy. **`T_MAX=450` is unvalidated — confirm against a datalog/dyno (item 8).**
+
 TPS is kept only for **intent** (kickdown, ROC). Torque bins (0-25/25-50/50-75/75-100%)
-key the adaptation.
+key the adaptation. Per-engine limits (overrev/lug RPM), sensor cal (TPS volts, MAP transfer
+function) and baseline fill tables also live in `EngineProfile`, not `InputManager.h`.
 
 ---
 
@@ -200,7 +220,7 @@ single biggest "sharp without sacrificing health" lever.
 | `K = 1.641` | TCU_Data.h | bench-verify TCC-locked ±20 rpm |
 | MAP rewire (33), engine tach (23) | TCU_Data.h | **hardware** |
 | `MAP_ZERO/K_T/T_MAX` torque model | TCU_Data.h | calibrate to engine/sensor |
-| `TPS_VOLTS_CLOSED/WOT` | InputManager.h | measure; consider `analogReadMilliVolts` |
+| `tps_closed_v / tps_wot_v` | EngineProfile (NVS) | measure; switch reads to `analogReadMilliVolts` (item 9) |
 | `FILL_P/FILL_T`, profile scalars | TCU_Data.h / ShiftScheduler | bench-tune per class |
 | Coast-down rpm thresholds | TCU_Data.h | tune to final-drive/tyre |
 | RP_LOCK / TORQUE_CUT polarity+enable | TCU_Data.h | verify hardware before enabling |
@@ -224,12 +244,14 @@ single biggest "sharp without sacrificing health" lever.
 ## 13. Web Dashboard
 
 AP `FMS_TCU`/`shiftfast` → `http://192.168.4.1`. 100 Hz telemetry (gate corrected from 10 Hz).
-New fields: `t_est_nm`, `load_pct`, `shift_class`, `pd_type`, `phase`, `revAbuse`, `htMode`.
 
-> **OPEN (Phase 9b):** the Calibration Studio tab still speaks the old 16×16 `get_table`/
-> `set_table` protocol and is **non-functional** until reworked for `get_cells`/`set_cells`
-> (4×4×4 cells × 3 fields). The Shift View phase bands also need remapping to the new 9-phase
-> enum. Live telemetry + Shift View charting are otherwise unaffected.
+Phase 9b is **done**: the tuner now speaks `get_cells`/`set_cells` (Adaptation v2, 4×4×4 cells ×
+3 fields), there's an **Engine Profile** tab (`get_profile`/`set_profile` — 8×8 torque surface +
+limits + sensor cal), and the Shift View phase bands are remapped to the 9-phase enum.
+
+Class/torque telemetry (item A-2, **done**): `buildAndSendTelemetryJSON()` emits `tEstNm`,
+`loadPct`, `shiftClass`, `pdType` alongside `phase`/`revAbuse`/`htMode`; the Adaptive Metrics
+panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Torque** readout.
 
 ---
 
@@ -254,33 +276,96 @@ New fields: `t_est_nm`, `load_pct`, `shift_class`, `pd_type`, `phase`, `revAbuse
 | V9–V12.1 | NAG52 turbine fix; perf tuning; selector-abuse protection; reverse interlock |
 | V13 | External-review fixes: reverse edge-trigger, adaptation cell-capture/two-sided/decel-delta, 100 Hz gate, char[]+seqlock, limp in all ranges, ingest clamp, dirty-mask mux |
 | **V14** | **ATSG shift-class architecture**: K=1.641 (tooth-derived); torque model; standby/garage/crank (p.53-54); 20 ms quantizer (p.80); class-based phase engine (POWER/COAST × UP/DOWN, PD_SPRAG/PD_TIMED); Adaptation v2 (class×idx×torque-bin); coast-down scheduler + kickdown; limp ratio-classifier (p.91); optional rusEFI torque-cut |
+| **V14.1** | Dashboard rework (Phase 9b): `get_cells`/`set_cells`, 9-phase enum remap; **EngineProfile** 8×8 NVS torque surface + Engine Profile tab; torque recal to 2.43/450 (real ~450 Nm @ 1.2 bar) |
+| **V14.2** | **(this doc, v6.0)** Second-pass external review folded in; HANDOFF.md retired into §16 open-items tracker. |
+| **V14.3** | **Review-2 fixes implemented (A+B+C9/C10+D):** TCC rate-limit/quantize + 300 ms post-shift hold; class/torque telemetry on dashboard; Y4 garage→shift takeover; 20 Hz-sample-aware ratio detectors; power-down (PD_TIMED) bind learning; boot de-energized; MPC leads the gate; `analogReadMilliVolts` ADC; edge-triggered paddles; stale-comment/dead-code cleanup. Remaining: C-8/11/12 (bench/dyno/hardware). |
 
 ---
 
-## 16. Open Questions / Handoff (FOR EXTERNAL REVIEW)
+## 16. OPEN ITEMS — live tracker (second-pass review, priority order)
 
-### 16.1 Resolved by the ATSG spec (were open in v4.0)
-- ✅ **Pulse-latch hold model is correct** — solenoids energised only during the shift; the
-  command valves latch the gear. Confirmed by the EGS52 "holds gear on failure until stop" behaviour.
-- ✅ **"All-off = 2nd"** holds only for a *fresh* P/N engagement; **mid-drive all-off holds the
-  latched gear** — hence limp now classifies from ratio (p.91), doesn't assert 2nd.
-- ✅ **SPC standby** = de-energized in gear; 33% duty in P/N (resolves the H2 heating question).
-- ✅ **Y4 garage pulse is OEM-correct** — kept and windowed (was wrongly flagged for deletion).
-- ✅ **K = 1.641** (tooth-count derivation), not 1.61.
+> Source: `Reference/FMS 722.6 TCU — Handoff Note (V14).pdf`. This replaces the old
+> HANDOFF.md. Status legend: ☐ open · ◐ in progress · ✅ done. Update inline as items close.
 
-### 16.2 New open items
-1. **Profile scalars are first-pass.** Fill times, apply slopes, inertia targets, sprag
-   dRatio/dt collapse threshold (0.002), catch hold windows — all need bench-trace tuning.
-2. **Sprag-catch detection** depends on 20 Hz output sampling resolving a dRatio/dt collapse;
-   verify it triggers cleanly on a real 3→2, and that the 500 ms backstop isn't hit normally.
-3. **Torque model** (`K_T`, `MAP_ZERO`, `T_MAX`) is a starting calibration — validate against
-   a known torque curve / wheel dyno.
-4. **Dashboard tuner rework (Phase 9b)** — see §13.
-5. **Kickdown hysteresis** — sequential downshifts are cooldown-gated; confirm no hunting at
-   threshold boundaries on a real pedal.
-6. **Manual-range top-gear clamp** ('4'/'3'/'2' limiting upshifts) is not implemented (paddle
-   build); coast protection still forces downshifts. Confirm this matches intent.
+### A — fix before bench
+- ✅ **1. TCC not rate-limited.** *(done — commit pending)* `updateTCC(ptick)` now moves only on
+  the 20 ms quantizer: `TCC_LOCK_STEP=2`%/tick lock (0→85% ≈ 850 ms), `TCC_RELEASE_STEP=10`%/tick
+  release (≈200 ms dump). Forced fully open during any shift phase **and** for
+  `TCC_POST_SHIFT_HOLD_MS=300` ms after via `_tcc_reopen_until_ms`. *(last leftover of review-1 H1)*
+- ✅ **2. Class/torque telemetry now broadcast.** *(done — commit pending)*
+  `buildAndSendTelemetryJSON()` emits `tEstNm`/`loadPct`/`shiftClass`/`pdType`; dashboard shows a
+  **Shift Class** badge (POWER UP/COAST UP/POWER DN ·SPRAG/·TIMED/COAST DN) + **Load / Torque**
+  readout in the Adaptive Metrics panel.
+- ✅ **3. Y4 garage-vs-shift collision.** *(done — commit pending)* `fireShiftSolenoid()` now takes
+  over a garage-owned Y4 (`STATE_HOLDING` → kick) and clears `_y4_garage_owned`, so a 3→4 inside
+  the 1500 ms lever window fires hydraulically instead of silently no-op'ing.
 
-### 16.3 Carried-over concurrency note
-- Status strings are `char[64]` + seqlock; scalar telemetry cross-core reads are atomic
-  word reads (fine). Adaptation NVS writes are Core-0-only under `portMUX`.
+### B — correctness / robustness
+- ✅ **4. 20 Hz ratio vs 1 kHz detectors.** *(done — commit pending)* SpeedReader now bumps
+  `speed_sample_seq` on each 50 ms refresh; the phase engine computes a `new_sample` edge and rolls
+  `_prev_ratio`/`_ratio_flat` **only on a new sample**, measuring flatness across consecutive
+  samples (`SPRAG_FLAT_RATIO_DELTA=0.02`). The PD_SPRAG catch reads the held `_ratio_flat` instead
+  of the old per-1 ms |Δ|<0.002 (which was trivially true 49/50 iters). PCNT window unchanged
+  (20 ms); level-based exits stay at 1 kHz with the accepted ≤50 ms inherent latency.
+- ✅ **5. Power-down bind learning revived.** *(done — commit pending)* The decel-delta bind metric
+  in `PHASE_CATCH` now fires for `SC_POWER_DOWN && PD_TIMED` as well as coast-down, so
+  `learn()`'s power-down path (apply_trim −2, softer catch) is reachable. PD_SPRAG stays excluded
+  (freewheel-synced, zero clamp = no catch shock to learn).
+- ✅ **6. Boot pressure de-energized.** *(done — commit pending)* `SolenoidDriver::begin()` now
+  commands `setLinePressure(100)`/`setShiftPressure(100)` (inverted-logic = no coil current) so
+  the coils aren't held at full current/min pressure through the ~1-2 s SPIFFS+WiFi/crank window.
+- ✅ **7. MPC leads the gate.** *(done — commit pending)* `beginShift()` calls `applyShiftMPC()`
+  on the same tick the routing solenoid fires, so line/overlap authority no longer lags to the
+  next 20 ms ptick (spec PREP intent).
+
+### C — calibration / hardware (mostly bench/dyno — nothing more to code unless noted)
+- ☐ **8. Torque model validation.** *(hardware/dyno — no code)* `K_T=2.43 / T_MAX=450` makes full
+  boost ≈100% load (right shape) but 450 Nm is unvalidated — confirm against datalog/dyno; the SPC
+  apply line and all four torque bins scale from it. W5A330 rated 330 Nm; ~450 is 36% over — firm
+  holding-pressure floor is deliberate, keep line authority high at load, treat ATF service as
+  strategy. (All web-editable in EngineProfile, no recompile.)
+- ✅ **9. ADC linearity.** *(done — commit pending)* TPS/MAP/temp reads switched from
+  `analogRead/4095·3.3` to `analogReadMilliVolts()` (eFuse-calibrated, linear up top where WOT
+  ~2.9 V and the P/N 3.0 V threshold sit). **Still TODO on the bench:** re-measure TPS closed/WOT
+  with the calibrated read and write them into EngineProfile.
+- ✅ **10. Paddles edge-triggered.** *(done — commit pending; owner chose one-shift-per-pull)*
+  `readPaddles()` now fires once on the rising edge, requires release to re-arm, `PADDLE_DEBOUNCE_MS=40`.
+  Holding no longer walks gears.
+- ☐ **11. M111 crank wheel:** *(hardware — no code)* confirm 60 vs 60-2 (missing teeth under-read
+  RPM ~3% + add jitter through the gap); VR sensor conditioning before PCNT remains a hardware item.
+  `PULSES_PER_REV_ENG` assumes a clean 60.
+- ☐ **12. Hardware rewires already encoded in pins:** *(hardware — no code)* MAP→GPIO33 (ADC1),
+  engine tach→GPIO23. RP_LOCK polarity and the GPIO15 torque-cut line (strapping pin; default
+  disabled) must be verified before enabling (`RP_LOCK_ACTIVE_HIGH` / `ENABLE_*` flags exist).
+
+### D — cosmetics / doc corrections
+- ✅ **13. Stale code comments cleared.** *(done — commit pending)* Fixed: TCU_Data W5A330 header
+  ("K is tooth-derived per variant: 1.641 small / 1.630 large", not "1.61 both"); SpeedReader
+  kinematics comment (1.641); `telemetry.shift_phase` comment (full 9-entry enum). Removed dead
+  code: `_flare_peak_ratio` (member + assignments), the leftover `y4_garage_owned` clear in
+  `crankPulseY3()`, and the dead `TPS_VOLTS_CLOSED/WOT` defines in InputManager.h.
+- ✅ **14. This manual (v6.0) corrected:** §2 torque section updated to the EngineProfile 8×8
+  surface @ 2.43/450; §13 "Phase 9b OPEN" closed (telemetry-broadcast gap re-filed as A-2);
+  §11 TPS cal relocated to EngineProfile.
+
+### Resolved by the ATSG spec (historical — do not re-litigate)
+- ✅ Pulse-latch hold model correct; ✅ "all-off = 2nd" only for fresh P/N engagement (mid-drive
+  holds latched gear → limp classifies from ratio, p.91); ✅ SPC standby de-energized in gear /
+  33% in P/N; ✅ Y4 garage pulse OEM-correct (kept + windowed); ✅ K=1.641 (tooth-count).
+- Review-2 verified-correct (don't re-audit): class engine + 20 ms quantizer + `_spc_cmd`
+  fractional ramp, PD_SPRAG/PD_TIMED split, coast-down decel-delta bind, kickdown + money-shift
+  guard, limp ratio-classifier, standby/garage/crank duties, reverse edge-latch failsafe,
+  mid-shift abort on leaving forward range, Adaptation v2 (bins-at-init, two-sided, deadband,
+  mux dirty mask, one-class flush on Core 0), all V13 fixes (10 ms gate, `char[64]`+seqlock,
+  bounded JSON parse, ingest clamps).
+
+### Carried-over concurrency note
+- Status strings are `char[64]` + seqlock; scalar telemetry cross-core reads are atomic word
+  reads. Adaptation NVS writes are Core-0-only under `portMUX`.
+
+### Validation order (spec §11 / §14, unchanged)
+Bench: K=1.641 TCC-locked ±20 rpm → scope standby duties + 20 ms SPC quantisation → garage
+N→D/N→R. Road: coast upshifts → power upshifts 25/50/75% load → coast downshifts to a stop →
+3→2 part-throttle (watch the sprag signature: ratio snaps to target with SPC still ~10%) → timed
+4→3 / 5→4 → full kickdown last. Log class/bins/phase-durations/SPC/MPC per shift (class/load now
+broadcast — A-2 done).

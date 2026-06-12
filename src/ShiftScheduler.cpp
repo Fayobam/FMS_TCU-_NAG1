@@ -91,15 +91,24 @@ void ShiftScheduler::calculateLiveRatio() {
 }
 
 // ----------------------------------------------------------------------------
-// TCC DYNAMIC SLIP CONTROLLER (unchanged logic, reads real tcc_lockup_pct now)
+// TCC DYNAMIC SLIP CONTROLLER
+// Rate-limited and 20ms-quantized (ATSG p.80): lockup moves at most TCC_LOCK_STEP
+// %/tick (gentle apply) and opens at TCC_RELEASE_STEP %/tick (fast). TCC is forced
+// fully open during any shift phase AND for TCC_POST_SHIFT_HOLD_MS after the shift
+// ends, so the converter never locks through a ratio change or the END line-decay.
 // ----------------------------------------------------------------------------
-void ShiftScheduler::updateTCC() {
+void ShiftScheduler::updateTCC(bool ptick) {
     telemetry.tcc_actual_slip_rpm = telemetry.engine_rpm - telemetry.turbine_rpm;
     if (telemetry.tcc_actual_slip_rpm < 0) telemetry.tcc_actual_slip_rpm = 0;
 
+    // Any active shift phase re-arms the post-shift hold; lockup control only resumes
+    // once we've been cruising for the full hold window.
+    if (_current_phase != PHASE_CRUISING) _tcc_reopen_until_ms = millis() + TCC_POST_SHIFT_HOLD_MS;
+    bool hold_open = (millis() < _tcc_reopen_until_ms);
+
     int current_tcc_pwm = telemetry.tcc_lockup_pct;
 
-    if (_current_phase == PHASE_CRUISING) {
+    if (_current_phase == PHASE_CRUISING && !hold_open) {
         // Force TCC open if: ROC mode active (fast tip-in), MAP shows boost,
         // or TPS is above moderate demand. ROC mode takes priority — it reacts
         // faster than MAP settling.
@@ -108,21 +117,24 @@ void ShiftScheduler::updateTCC() {
                           telemetry.tps_pct > 45.0f;
         if (force_open) {
             telemetry.tcc_target_slip_rpm = 500.0f;
-            current_tcc_pwm -= 2;
+            if (ptick) current_tcc_pwm -= TCC_RELEASE_STEP;
         } else if (telemetry.engine_rpm < 1400.0f || telemetry.current_gear == 1) {
             telemetry.tcc_target_slip_rpm = 1000.0f;
-            current_tcc_pwm -= 3;
+            if (ptick) current_tcc_pwm -= TCC_RELEASE_STEP;
         } else {
             telemetry.tcc_target_slip_rpm = 50.0f;
-            if (telemetry.tcc_actual_slip_rpm > (telemetry.tcc_target_slip_rpm + 20.0f)) {
-                if (current_tcc_pwm < 85) current_tcc_pwm += 1;
-            } else if (telemetry.tcc_actual_slip_rpm < (telemetry.tcc_target_slip_rpm - 10.0f)) {
-                current_tcc_pwm -= 1;
+            if (ptick) {
+                if (telemetry.tcc_actual_slip_rpm > (telemetry.tcc_target_slip_rpm + 20.0f)) {
+                    if (current_tcc_pwm < 85) current_tcc_pwm += TCC_LOCK_STEP;
+                } else if (telemetry.tcc_actual_slip_rpm < (telemetry.tcc_target_slip_rpm - 10.0f)) {
+                    current_tcc_pwm -= TCC_LOCK_STEP;
+                }
             }
         }
     } else {
+        // Shifting or inside the post-shift hold: drive fully open at the release rate.
         telemetry.tcc_target_slip_rpm = 1000.0f;
-        current_tcc_pwm -= 5;
+        if (ptick) current_tcc_pwm -= TCC_RELEASE_STEP;
     }
     _solenoids->setTCC((uint8_t)constrain(current_tcc_pwm, 0, 100));
 }
@@ -163,8 +175,9 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     telemetry.flare_detected = false;
     telemetry.bind_detected  = false;
     _harsh_detected = false;
-    _flare_peak_ratio = telemetry.live_ratio;
     _prev_ratio = telemetry.live_ratio;
+    _ratio_flat = false;
+    _last_speed_seq = telemetry.speed_sample_seq;   // first in-shift sample triggers a fresh delta
     _sync_stable_since_ms = 0;
     _turbine_rpm_at_shift_start = telemetry.turbine_rpm;
     _output_rpm_at_shift_start  = telemetry.output_rpm;
@@ -175,6 +188,8 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     _last_pressure_update_ms  = millis();
     _phase_start_tick = xTaskGetTickCount();
     _current_phase = PHASE_PREP;     // all classes start in PREP
+    applyShiftMPC();                 // lead the gate: set line/overlap authority on THIS tick,
+                                     // not the next 20ms ptick (spec PREP intent) — B-7
     return true;
 }
 
@@ -567,6 +582,11 @@ void ShiftScheduler::update() {
     bool ptick = (millis() - _last_pressure_update_ms >= PRESSURE_TICK_MS);
     if (ptick) _last_pressure_update_ms = millis();
 
+    // A genuinely-new 20 Hz speed sample landed this tick? Ratio-derivative predicates
+    // (sprag flat) only advance on new samples; between samples the ratio is frozen (B-4).
+    bool new_sample = (telemetry.speed_sample_seq != _last_speed_seq);
+    if (new_sample) _last_speed_seq = telemetry.speed_sample_seq;
+
     if (_current_phase == PHASE_CRUISING) {
         updateStandbyAndGarage();   // SPC/MPC standby duties + Y4 garage window
 
@@ -597,7 +617,7 @@ void ShiftScheduler::update() {
                 beginShift(telemetry.current_gear - 1, false, "PADDLE");
         }
     } else {
-        runShiftPhases(time_in_phase_ms, ptick);
+        runShiftPhases(time_in_phase_ms, ptick, new_sample);
     }
 
     // rusEFI torque-cut: only during a high-load power-up inertia phase (spec §9).
@@ -605,7 +625,7 @@ void ShiftScheduler::update() {
                              _sclass == SC_POWER_UP &&
                              _load_at_start > TORQUE_CUT_MIN_LOAD);
 
-    updateTCC();
+    updateTCC(ptick);
 }
 
 // ============================================================================
@@ -639,9 +659,16 @@ void ShiftScheduler::finishShift() {
     _current_phase = PHASE_LOCK; _phase_start_tick = xTaskGetTickCount();
 }
 
-void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick) {
+void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample) {
     if (ptick && _current_phase != PHASE_END) applyShiftMPC();
-    if (telemetry.live_ratio > _flare_peak_ratio) _flare_peak_ratio = telemetry.live_ratio;
+
+    // Ratio derivative is only meaningful across consecutive 20 Hz samples. Recompute the
+    // "flat" flag (and roll _prev_ratio) ONLY when a fresh sample lands; hold it between
+    // samples so the 1 kHz loop reads a stable value instead of a frozen |Δ|=0 (B-4).
+    if (new_sample) {
+        _ratio_flat = fabsf(telemetry.live_ratio - _prev_ratio) < SPRAG_FLAT_RATIO_DELTA;
+        _prev_ratio = telemetry.live_ratio;
+    }
 
     switch (_current_phase) {
         case PHASE_PREP:
@@ -685,10 +712,10 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick) {
             if (_sclass == SC_COAST_DOWN) {
                 go_catch = (t >= _release_backstop_ms);          // no sync wait at closed throttle
             } else if (_pd_type == PD_SPRAG) {
-                // Freewheel catches at sync: ratio reaches target and dRatio/dt collapses ~40ms.
+                // Freewheel catches at sync: ratio reaches target AND its dRatio/dt collapses.
+                // Flatness is measured across speed samples (_ratio_flat), not per 1 ms tick.
                 bool at_sync = telemetry.live_ratio >= _ratio_target - 0.05f;
-                bool flat    = fabsf(telemetry.live_ratio - _prev_ratio) < 0.002f;
-                if (at_sync && flat) {
+                if (at_sync && _ratio_flat) {
                     if (_sync_stable_since_ms == 0) _sync_stable_since_ms = millis();
                     else if (millis() - _sync_stable_since_ms > 40) go_catch = true;
                 } else _sync_stable_since_ms = 0;
@@ -712,8 +739,12 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick) {
 
         case PHASE_CATCH:                             // downshift: clamp as sync approaches
             if (ptick) setSPC(_spc_cmd + _catch_slope);
-            // Coast-class bind via decel-delta (clutch decel beyond the braking trend).
-            if (_sclass == SC_COAST_DOWN) {
+            // Bind via decel-delta: output decel beyond the pre-catch trend = the catch clutch
+            // grabbing harshly. Applies to coast-down (learns +fill_t) AND power-down PD_TIMED
+            // (learns -apply, softer catch). PD_SPRAG is freewheel-synced with zero commanded
+            // clamp through the speed change — by design there is no catch shock to learn from.
+            if (_sclass == SC_COAST_DOWN ||
+                (_sclass == SC_POWER_DOWN && _pd_type == PD_TIMED)) {
                 float elapsed = (float)(millis() - _catch_start_ms);
                 float predicted = _ds_baseline_decel_rate * elapsed;
                 float actual = _output_rpm_at_catch_start - telemetry.output_rpm;
@@ -745,7 +776,7 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick) {
 
         default: break;
     }
-    _prev_ratio = telemetry.live_ratio;
+    // _prev_ratio is rolled at the top, only on a new speed sample (B-4) — not here.
 }
 
 // Nearest-ratio gear classifier (ATSG p.91): used by limp so we report the latched

@@ -197,6 +197,12 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["phase"]     = telemetry.shift_phase;
     doc["revAbuse"]  = telemetry.reverse_abuse_active;
 
+    // Class engine readouts (the validation plan logs these per shift).
+    doc["tEstNm"]    = telemetry.t_est_nm;
+    doc["loadPct"]   = telemetry.load_pct;
+    doc["shiftClass"]= telemetry.shift_class;   // 0=POWER_UP 1=COAST_UP 2=POWER_DOWN 3=COAST_DOWN
+    doc["pdType"]    = telemetry.pd_type;       // 0=NONE 1=SPRAG 2=TIMED
+
     char buffer[1024];
     size_t len = serializeJson(doc, buffer, sizeof(buffer));
     if (len >= sizeof(buffer) - 1) Serial.println("WARNING: Telemetry JSON truncated — increase buffer!");

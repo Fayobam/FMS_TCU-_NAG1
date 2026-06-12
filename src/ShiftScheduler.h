@@ -59,13 +59,15 @@ class ShiftScheduler {
     // --- 20ms pressure-update quantizer (ATSG p.80) ---
     unsigned long _last_pressure_update_ms;
     float    _spc_cmd;              // fractional SPC accumulator so ramps are smooth across 20ms ticks
+    unsigned long _tcc_reopen_until_ms = 0; // hold TCC fully open until this time (post-shift)
 
     // --- Detection state ---
     unsigned long _shift_stopwatch_start;
     float    _turbine_rpm_at_shift_start;
     float    _output_rpm_at_shift_start;
-    float    _flare_peak_ratio;        // highest ratio seen during torque/inertia (flare)
-    float    _prev_ratio;              // for dRatio/dt collapse (sprag catch detection)
+    float    _prev_ratio;              // ratio at the PREVIOUS speed sample (sprag dRatio/dt)
+    bool     _ratio_flat = false;      // |Δratio| over the last sample < flat band (held between samples)
+    uint32_t _last_speed_seq = 0;      // last speed_sample_seq the engine acted on (B-4)
     unsigned long _sync_stable_since_ms; // when ratio first parked at target (sprag/timed catch)
     float    _output_rpm_at_catch_start; // coast-down decel-delta metric baseline
     unsigned long _catch_start_ms;
@@ -95,7 +97,7 @@ class ShiftScheduler {
     void calculateLinePressure();             // CRUISING line pressure (holding map + ATF)
     float cruiseLinePressure();               // the cruise MPC value, for max(cruise, …) during shifts
     void calculateLiveRatio();
-    void updateTCC();
+    void updateTCC(bool ptick);
     void checkSafetyShifts();
     void checkCoastDownSchedule();            // auto downshifts while coasting to a stop
     void checkKickdown();                     // power-down request on hard tip-in
@@ -106,7 +108,7 @@ class ShiftScheduler {
     void updateStandbyAndGarage();            // SPC/MPC standby duties + Y4 garage window (not shifting)
     bool beginShift(uint8_t target_gear, bool is_upshift, const char* source);
     void classifyAndProfile(uint8_t from, uint8_t to, bool is_upshift);  // class + profile scalars
-    void runShiftPhases(unsigned long t_ms, bool ptick);  // the class-aware phase engine
+    void runShiftPhases(unsigned long t_ms, bool ptick, bool new_sample);  // the class-aware phase engine
     void setSPC(float pct);                   // write _spc_cmd + command solenoid
     void applyShiftMPC();                     // MPC rule during a shift (per class/load)
     void finishShift();                       // latch gear, schedule END decay, adapt

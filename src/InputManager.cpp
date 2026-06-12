@@ -14,6 +14,8 @@ InputManager::InputManager(uint8_t temp_sensor_pin, uint8_t tps_pin, uint8_t map
     _map_filtered = 100.0f;
     _last_paddle_up_time = 0;
     _last_paddle_down_time = 0;
+    _paddle_up_prev = false;
+    _paddle_down_prev = false;
 }
 
 void InputManager::begin() {
@@ -64,19 +66,22 @@ void InputManager::decodePRND() {
 
 void InputManager::readPaddles() {
     unsigned long current_time = millis();
+    bool up = (digitalRead(PIN_PADDLE_UP) == HIGH);
+    bool dn = (digitalRead(PIN_PADDLE_DOWN) == HIGH);
 
-    if (digitalRead(PIN_PADDLE_UP) == HIGH) {
-        if (current_time - _last_paddle_up_time > 200) {
-            telemetry.paddle_up_request = true;
-            _last_paddle_up_time = current_time;
-        }
+    // EDGE-triggered: fire once on the press edge (rising), debounced. The paddle must be
+    // released (and re-armed) before it can request another shift — holding does NOT repeat.
+    if (up && !_paddle_up_prev && (current_time - _last_paddle_up_time > PADDLE_DEBOUNCE_MS)) {
+        telemetry.paddle_up_request = true;
+        _last_paddle_up_time = current_time;
     }
-    if (digitalRead(PIN_PADDLE_DOWN) == HIGH) {
-        if (current_time - _last_paddle_down_time > 200) {
-            telemetry.paddle_down_request = true;
-            _last_paddle_down_time = current_time;
-        }
+    _paddle_up_prev = up;
+
+    if (dn && !_paddle_down_prev && (current_time - _last_paddle_down_time > PADDLE_DEBOUNCE_MS)) {
+        telemetry.paddle_down_request = true;
+        _last_paddle_down_time = current_time;
     }
+    _paddle_down_prev = dn;
 }
 
 // ============================================================================
@@ -84,7 +89,10 @@ void InputManager::readPaddles() {
 // ============================================================================
 void InputManager::readThrottleAndBoost() {
     // --- TPS --- (calibration from the engine profile so swaps need no recompile)
-    float tps_v = (analogRead(_tps_pin) / ADC_MAX_TICKS) * ADC_REF_VOLTAGE;
+    // analogReadMilliVolts() applies the ESP32 eFuse ADC calibration → linear up top,
+    // where WOT (~2.9 V) and the P/N threshold (3.0 V) otherwise sit in the raw ADC's
+    // nonlinear region. Returns mV; /1000 → volts.
+    float tps_v = analogReadMilliVolts(_tps_pin) / 1000.0f;
     float tps_closed = engineProfile.tpsClosedV(), tps_wot = engineProfile.tpsWotV();
     float tps_span = (tps_wot - tps_closed);
     float tps_pct = (tps_span > 0.01f) ? (tps_v - tps_closed) / tps_span * 100.0f : 0.0f;
@@ -94,7 +102,7 @@ void InputManager::readThrottleAndBoost() {
     telemetry.tps_pct = _tps_filtered;
 
     // --- MAP --- (transfer function from the engine profile)
-    float map_v = (analogRead(_map_pin) / ADC_MAX_TICKS) * ADC_REF_VOLTAGE;
+    float map_v = analogReadMilliVolts(_map_pin) / 1000.0f;
     float map_kpa = engineProfile.mapAt0V() + (map_v * engineProfile.mapPerV());
     map_kpa = constrain(map_kpa, 20.0f, 260.0f); // sanity clamp
     _map_filtered += 0.2f * (map_kpa - _map_filtered);
@@ -110,8 +118,8 @@ float InputManager::calculateTemperatureFromResistance(float resistance_ohms) {
 }
 
 void InputManager::updateAnalogSensors() {
-    int raw_adc = analogRead(_temp_sensor_pin);
-    float pin_voltage = (raw_adc / ADC_MAX_TICKS) * ADC_REF_VOLTAGE;
+    // Calibrated read (linear near the 3.0 V P/N threshold; see readThrottleAndBoost).
+    float pin_voltage = analogReadMilliVolts(_temp_sensor_pin) / 1000.0f;
 
     if (pin_voltage > 3.0f) {
         telemetry.pn_switch_raw = true;          // <-- raw reading only

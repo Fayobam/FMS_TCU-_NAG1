@@ -56,8 +56,8 @@ void SpeedReader::begin() {
 // ============================================================================
 float SpeedReader::calculateTurbineRPM(float n2_rpm, float n3_rpm) {
     // NAG52 unified formula — one expression, all gears, no gear-position dependency:
-    //   turbine = (N2 * K) - (N3 * (K-1))   K = N2_N3_BLEND_K = 1.61
-    // Verify: N3=0 (gears 1&5) → N2*1.61; N2=N3 (3rd gear direct) → N2*1.0 ✓
+    //   turbine = (N2 * K) - (N3 * (K-1))   K = N2_N3_BLEND_K = 1.641 (tooth-derived, small NAG)
+    // Verify: N3=0 (gears 1&5) → N2*1.641; N2=N3 (3rd gear direct) → N2*1.0 ✓
     // Prior code had N2/N3 swapped → negative turbine RPM in 1st gear.
     float turbine = (n2_rpm * N2_N3_BLEND_K) - (n3_rpm * (N2_N3_BLEND_K - 1.0f));
     return fmaxf(0.0f, turbine);
@@ -90,6 +90,7 @@ void SpeedReader::update() {
         // Constrain to prevent random math drops below 0
         if (telemetry.turbine_rpm < 0) telemetry.turbine_rpm = 0;
 
+        telemetry.speed_sample_seq++;   // signal the phase engine that a fresh sample landed (B-4)
         _last_read_time = current_time;
     }
 }

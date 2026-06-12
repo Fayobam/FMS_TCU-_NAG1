@@ -10,12 +10,14 @@
 
 // --- HARDWARE CALIBRATION ---
 #define TEMP_PULLUP_RESISTOR_OHMS 1000.0f
-#define ADC_MAX_TICKS 4095.0f
 #define ADC_REF_VOLTAGE 3.3f
 
-// TPS calibration: voltage at closed and wide-open throttle (CALIBRATE THESE)
-#define TPS_VOLTS_CLOSED 0.50f
-#define TPS_VOLTS_WOT     2.90f
+// TPS closed/WOT voltages now live in EngineProfile (NVS, web-editable) — see
+// engineProfile.tpsClosedV()/tpsWotV(). The old TPS_VOLTS_CLOSED/WOT defines were dead.
+
+// Paddles are EDGE-triggered: one shift per pull, release required before re-arming.
+// This debounce rejects contact bounce on the rising edge.
+#define PADDLE_DEBOUNCE_MS 40
 
 class InputManager {
   private:
@@ -30,6 +32,8 @@ class InputManager {
 
     unsigned long _last_paddle_up_time;
     unsigned long _last_paddle_down_time;
+    bool _paddle_up_prev;     // edge-detect: paddle state last tick (require release to re-arm)
+    bool _paddle_down_prev;
 
     float calculateTemperatureFromResistance(float resistance_ohms);
     void decodePRND();
