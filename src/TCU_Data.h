@@ -205,8 +205,8 @@ struct TCU_Telemetry {
     float output_rpm  = 0.0f;
     float engine_rpm  = 0.0f;
     float live_ratio  = 0.0f;
-    uint32_t speed_sample_seq = 0;   // ++ on each 200 Hz MCPWM speed refresh; lets the 1 kHz
-                                     // phase engine detect a genuinely-new speed sample (B-4)
+    uint32_t speed_sample_seq = 0;   // ++ when a NEW edge advances a ratio channel (N2/N3/OUT);
+                                     // lets the 1 kHz phase engine gate ratio-derivative checks (B-4)
 
     // --- Engine Load ---
     float tps_pct = 0.0f;

@@ -43,6 +43,7 @@ static bool IRAM_ATTR onCaptureISR(mcpwm_cap_channel_handle_t chan,
     if (ch->count < SR_RING_N) ch->count = ch->count + 1;
     ch->last_cap = now;
     ch->last_edge_us = esp_timer_get_time();
+    ch->edge_count++;                              // signal a genuinely-new edge landed
     return false;
 }
 
@@ -103,7 +104,6 @@ void SpeedReader::begin() {
     configChannel(_out, _last_out_ppr, SR_MAX_RPM_OUT);
     configChannel(_eng, _last_eng_ppr, SR_MAX_RPM_ENG);
 
-    _last_update_ms = millis();
     Serial.printf("Speed Reader V3.0 (MCPWM period capture @ %lu Hz; ENG %u PPR, OUT %u PPR).\n",
                   (unsigned long)_cap_res_hz, _last_eng_ppr, _last_out_ppr);
 }
@@ -172,9 +172,10 @@ float SpeedReader::calculateTurbineRPM(float n2_rpm, float n3_rpm) {
 }
 
 void SpeedReader::update() {
-    unsigned long now = millis();
-    if (now - _last_update_ms < 5) return;   // 200 Hz refresh (was 20 Hz with counting)
-    _last_update_ms = now;
+    // Called every 1ms. We recompute every tick so the open-interval clamp in
+    // readChannelRPM() tracks hard deceleration / low-speed shafts (sparse edges)
+    // at full loop resolution — the steady-state average only changes when a new
+    // edge lands, but the between-edge decel estimate refreshes each tick.
 
     // Hot-apply PPR edits from the web tuner (math-only reconfig, no hardware touch).
     uint16_t eng_ppr = engineProfile.engPpr(), out_ppr = engineProfile.outPpr();
@@ -187,5 +188,13 @@ void SpeedReader::update() {
     telemetry.engine_rpm  = readChannelRPM(_eng);
     telemetry.turbine_rpm = calculateTurbineRPM(n2, n3);
 
-    telemetry.speed_sample_seq++;   // signal the 1kHz phase engine that a fresh sample landed (B-4)
+    // Bump the sample sequence ONLY when a real new edge advanced a RATIO channel
+    // (N2/N3/OUT — they drive live_ratio). Engine-only edges must NOT trip the phase
+    // engine's ratio-derivative gate (B-4): a frozen ratio would read "flat" trivially.
+    // So speed_sample_seq means "new ratio data", not "recomputed".
+    uint32_t ratio_edges = _n2.edge_count + _n3.edge_count + _out.edge_count;
+    if (ratio_edges != _last_ratio_edges) {
+        _last_ratio_edges = ratio_edges;
+        telemetry.speed_sample_seq++;
+    }
 }

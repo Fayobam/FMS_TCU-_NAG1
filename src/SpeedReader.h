@@ -47,6 +47,7 @@ struct SpeedChannel {
     volatile uint32_t last_cap = 0;    // last accepted edge, capture ticks
     volatile bool     has_last = false;
     volatile int64_t  last_edge_us = 0;  // esp_timer time of last accepted edge
+    volatile uint32_t edge_count = 0;    // monotonic accepted-edge counter (new-edge signal)
     uint32_t min_period_ticks = 1;     // glitch floor (from max plausible rpm)
 
     // --- main-loop config/state ---
@@ -67,8 +68,8 @@ class SpeedReader {
 
     SpeedChannel _n2, _n3, _out, _eng;
 
-    unsigned long _last_update_ms = 0;
     uint16_t _last_eng_ppr = 0, _last_out_ppr = 0;  // hot-apply web PPR changes
+    uint32_t _last_ratio_edges = 0;                 // last N2+N3+OUT edge sum acted on (B-4 gate)
 
     void initChannel(mcpwm_cap_timer_handle_t timer, SpeedChannel &ch, uint8_t pin);
     void configChannel(SpeedChannel &ch, float ppr, float max_rpm);
@@ -78,5 +79,5 @@ class SpeedReader {
   public:
     SpeedReader(uint8_t pin_n2, uint8_t pin_n3, uint8_t pin_out, uint8_t pin_eng);
     void begin();
-    void update();   // call every loop; internally gated to 5ms
+    void update();   // call every loop (1kHz); recomputes every tick for fine decel tracking
 };
