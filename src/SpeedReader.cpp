@@ -4,6 +4,7 @@
 // UPDATES: Merged 722.6 Kinematics with zero-overhead ESP32 PCNT drivers.
 // ============================================================================
 #include "SpeedReader.h"
+#include "EngineProfile.h"   // engine-RPM PPR is a web-editable engine constant now
 
 SpeedReader::SpeedReader(uint8_t pin_n2, uint8_t pin_n3, uint8_t pin_out, uint8_t pin_eng) {
     _pin_n2 = pin_n2;
@@ -81,8 +82,8 @@ void SpeedReader::update() {
         _raw_n2_rpm = (pulses_n2 / TEETH_N2) * (60000.0f / delta_time); 
         _raw_n3_rpm = (pulses_n3 / TEETH_N3) * (60000.0f / delta_time);
         
-        telemetry.output_rpm = (pulses_out / TEETH_OUT) * (60000.0f / delta_time); 
-        telemetry.engine_rpm = (pulses_eng / PULSES_PER_REV_ENG)  * (60000.0f / delta_time);  
+        telemetry.output_rpm = (pulses_out / TEETH_OUT) * (60000.0f / delta_time);
+        telemetry.engine_rpm = (pulses_eng / (float)engineProfile.engPpr()) * (60000.0f / delta_time);
 
         // 3. Run planetary kinematics to find true Turbine Input Speed
         telemetry.turbine_rpm = calculateTurbineRPM(_raw_n2_rpm, _raw_n3_rpm);

@@ -21,7 +21,7 @@
 
 #define EP_RPM_BINS 8
 #define EP_MAP_BINS 8
-#define EP_MAGIC    0x4E414731u   // 'NAG1' — bump if the struct layout changes
+#define EP_MAGIC    0x4E414732u   // 'NAG2' — bump if the struct layout changes (v2: + eng_ppr)
 
 struct EngineProfileData {
     int16_t  torque[EP_RPM_BINS][EP_MAP_BINS];  // Nm on the RPM×MAP grid
@@ -30,6 +30,8 @@ struct EngineProfileData {
     uint16_t t_max_ref;                         // reference torque for load_pct (≈ clutch capacity)
     uint16_t overrev_rpm;                       // forced-upshift / redline guard
     uint16_t lug_rpm;                           // lug-protection threshold
+    uint16_t eng_ppr;                           // engine-RPM pulses/rev (crank or rusEFI tach);
+                                                // RPM resolution ≈ 1200/ppr per 50 ms count
     float    tps_closed_v, tps_wot_v;           // TPS calibration
     float    map_kpa_at_0v, map_kpa_per_volt;   // MAP transfer function
     uint8_t  fill_p[4];                         // baseline upshift fill pressure % (1-2,2-3,3-4,4-5)
@@ -53,6 +55,7 @@ class EngineProfile {
 
     uint16_t overrevRpm() const { return d.overrev_rpm; }
     uint16_t lugRpm()     const { return d.lug_rpm; }
+    uint16_t engPpr()     const { return d.eng_ppr ? d.eng_ppr : 60; }  // never 0 (div-by-zero guard)
     float    tpsClosedV() const { return d.tps_closed_v; }
     float    tpsWotV()    const { return d.tps_wot_v; }
     float    mapAt0V()    const { return d.map_kpa_at_0v; }

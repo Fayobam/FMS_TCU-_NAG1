@@ -285,6 +285,7 @@ panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Tor
 | **V14.1** | Dashboard rework (Phase 9b): `get_cells`/`set_cells`, 9-phase enum remap; **EngineProfile** 8×8 NVS torque surface + Engine Profile tab; torque recal to 2.43/450 (real ~450 Nm @ 1.2 bar) |
 | **V14.2** | **(this doc, v6.0)** Second-pass external review folded in; HANDOFF.md retired into §16 open-items tracker. |
 | **V14.3** | **Review-2 fixes implemented (A+B+C9/C10+D):** TCC rate-limit/quantize + 300 ms post-shift hold; class/torque telemetry on dashboard; Y4 garage→shift takeover; 20 Hz-sample-aware ratio detectors; power-down (PD_TIMED) bind learning; boot de-energized; MPC leads the gate; `analogReadMilliVolts` ADC; edge-triggered paddles; stale-comment/dead-code cleanup. Remaining: C-8/11/12 (bench/dyno/hardware). |
+| **V14.4** | **Engine PPR is web-editable** (EngineProfile `eng_ppr`, default 60; EP_MAGIC→'NAG2'): change the engine-RPM pulses/rev from the Engine Profile tab to match a rusEFI tach output or other source without recompiling. SpeedReader reads `engineProfile.engPpr()` live. **Note: flashing this re-seeds the EngineProfile NVS to defaults** (struct grew) — re-enter any custom torque-surface/cal values after the update. |
 
 ---
 
@@ -337,10 +338,11 @@ panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Tor
 - ✅ **10. Paddles edge-triggered.** *(done — commit pending; owner chose one-shift-per-pull)*
   `readPaddles()` now fires once on the rising edge, requires release to re-arm, `PADDLE_DEBOUNCE_MS=40`.
   Holding no longer walks gears.
-- ☐ **11. Engine-RPM signal source (decision pending).** *(hardware + 1-line constant)* RPM is
+- ☐ **11. Engine-RPM signal source (decision pending).** *(hardware; PPR now web-editable)* RPM is
   frequency-counted over a 50 ms window → resolution ≈ 1200/PPR rpm/count; the TCC slip loop
-  (50 rpm target) and overrev need **≥24 PPR** (2–4 PPR is too coarse). Options, set
-  `PULSES_PER_REV_ENG` to match (now documented inline in SpeedReader.h):
+  (50 rpm target) and overrev need **≥24 PPR** (2–4 PPR is too coarse). **`eng_ppr` is now an
+  EngineProfile field** — set it live on the Engine Profile tab (no recompile) to match the wired
+  source:
   - **Raw M111 crank** = 60-**minus-2** wheel; the missing-tooth gap makes the simple counter
     under-read ~3% + jitter. Highest edge fidelity but needs gap-aware handling (not yet coded).
   - **rusEFI tach output @ 24–36 PPR (recommended)** — clean, gap-free; sidesteps the 60-2 gap

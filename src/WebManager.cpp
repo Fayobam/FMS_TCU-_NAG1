@@ -64,6 +64,7 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         JsonArray mb = resp["map"].to<JsonArray>();
         for (int j = 0; j < EP_MAP_BINS; j++) mb.add(p->map_bp[j]);
         resp["tmax"] = p->t_max_ref; resp["overrev"] = p->overrev_rpm; resp["lug"] = p->lug_rpm;
+        resp["ppr"]  = p->eng_ppr;
         resp["tpsC"] = p->tps_closed_v; resp["tpsW"] = p->tps_wot_v;
         resp["map0"] = p->map_kpa_at_0v; resp["mapV"] = p->map_kpa_per_volt;
         JsonArray fp = resp["fillp"].to<JsonArray>();
@@ -84,6 +85,7 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         }
         if (doc["overrev"].is<int>()) p->overrev_rpm = (uint16_t)constrain(doc["overrev"].as<int>(), 3000, 9000);
         if (doc["lug"].is<int>())     p->lug_rpm     = (uint16_t)constrain(doc["lug"].as<int>(), 500, 2500);
+        if (doc["ppr"].is<int>())     p->eng_ppr     = (uint16_t)constrain(doc["ppr"].as<int>(), 1, 200);
         if (doc["tmax"].is<int>())    p->t_max_ref   = (uint16_t)constrain(doc["tmax"].as<int>(), 100, 1200);
         if (doc["tpsC"].is<float>())  p->tps_closed_v = doc["tpsC"].as<float>();
         if (doc["tpsW"].is<float>())  p->tps_wot_v    = doc["tpsW"].as<float>();
