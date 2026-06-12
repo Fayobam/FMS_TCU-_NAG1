@@ -257,6 +257,12 @@ panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Tor
 
 ## 14. Validation Plan (bench → road, spec §11)
 
+0. **Engine-RPM signal source** (do this first — everything else needs trustworthy RPM): scope
+   whatever feeds `PIN_ENG_SPEED` at idle→redline. Confirm clean, evenly-spaced pulses and a
+   3.3 V logic level. If using the rusEFI tach output, verify the configured PPR holds its
+   spacing at 7000 rpm (60 PPR = 7 kHz — may jitter; drop to 24–36 PPR if so) and set
+   `PULSES_PER_REV_ENG` to match. Cross-check the displayed RPM against rusEFI's own RPM. Need
+   ≥24 PPR for the TCC slip loop / overrev to resolve (≤50 rpm/count).
 1. Output free: TCC-locked turbine check (K=1.641); scope standby duties (P/N 33/40%,
    in-gear SPC flat-OFF); confirm 20 ms command quantisation on the SPC trace.
 2. Garage: N→D / N→R < 800 ms, no clunk; verify Y4 window on the scope; B2 firmness after Y4 drop.
@@ -331,12 +337,23 @@ panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Tor
 - ✅ **10. Paddles edge-triggered.** *(done — commit pending; owner chose one-shift-per-pull)*
   `readPaddles()` now fires once on the rising edge, requires release to re-arm, `PADDLE_DEBOUNCE_MS=40`.
   Holding no longer walks gears.
-- ☐ **11. M111 crank wheel:** *(hardware — no code)* confirm 60 vs 60-2 (missing teeth under-read
-  RPM ~3% + add jitter through the gap); VR sensor conditioning before PCNT remains a hardware item.
-  `PULSES_PER_REV_ENG` assumes a clean 60.
+- ☐ **11. Engine-RPM signal source (decision pending).** *(hardware + 1-line constant)* RPM is
+  frequency-counted over a 50 ms window → resolution ≈ 1200/PPR rpm/count; the TCC slip loop
+  (50 rpm target) and overrev need **≥24 PPR** (2–4 PPR is too coarse). Options, set
+  `PULSES_PER_REV_ENG` to match (now documented inline in SpeedReader.h):
+  - **Raw M111 crank** = 60-**minus-2** wheel; the missing-tooth gap makes the simple counter
+    under-read ~3% + jitter. Highest edge fidelity but needs gap-aware handling (not yet coded).
+  - **rusEFI tach output @ 24–36 PPR (recommended)** — clean, gap-free; sidesteps the 60-2 gap
+    AND the VR-conditioning item below. **Scope it even at 7 kHz; level-shift 5/12 V → 3.3 V.**
+  - **CAN RPM (cleanest)** — see item 15.
 - ☐ **12. Hardware rewires already encoded in pins:** *(hardware — no code)* MAP→GPIO33 (ADC1),
   engine tach→GPIO23. RP_LOCK polarity and the GPIO15 torque-cut line (strapping pin; default
   disabled) must be verified before enabling (`RP_LOCK_ACTIVE_HIGH` / `ENABLE_*` flags exist).
+- ☐ **15. CAN RPM path (future, robust).** *(new — code + hardware)* Add a 3.3 V CAN transceiver
+  (e.g. SN65HVD230) on a spare pin-pair and read RPM from rusEFI's broadcast instead of counting
+  pulses — gap-free, jitter-free, no resolution ceiling, and opens the door to pulling coolant/
+  other channels too. Replaces the `PIN_ENG_SPEED` pulse path; keep the pulse counter as fallback.
+  Effort: new CAN reader module + a telemetry source-select. Not started.
 
 ### D — cosmetics / doc corrections
 - ✅ **13. Stale code comments cleared.** *(done — commit pending)* Fixed: TCU_Data W5A330 header

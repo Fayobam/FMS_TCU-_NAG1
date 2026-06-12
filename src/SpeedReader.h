@@ -12,7 +12,17 @@
 const float TEETH_N2 = 60.0f;          // OEM 722.6 Internal N2 Drum
 const float TEETH_N3 = 60.0f;          // OEM 722.6 Internal N3 Drum
 const float TEETH_OUT = 24.0f;         // Custom External Output Shaft Sensor
-const float PULSES_PER_REV_ENG = 60.0f; // 60-tooth crank reluctor wheel (M111)
+// Engine-RPM pulses per rev. RPM is frequency-counted over a 50 ms window, so the
+// resolution is ~1200/PPR rpm per count: 60 PPR = 20 rpm, 36 = 33, 24 = 50, 4 = 300.
+// The TCC slip loop (targets 50 rpm) and overrev both need >=24 PPR; 2-4 PPR is too coarse.
+// SOURCE OPTIONS (set this to match whatever you wire to PIN_ENG_SPEED):
+//   60  = raw M111 crank sensor — but it's a 60-MINUS-2 wheel; the missing-tooth gap makes
+//         this simple counter under-read ~3% and jitter (open item C-11). Level-shift the VR.
+//   24-36 = rusEFI tach output configured to a clean, gap-free PPR (recommended; sidesteps
+//         the 60-2 gap). VERIFY evenly-spaced on a scope at high rpm, and LEVEL-SHIFT the
+//         tach pin to 3.3 V — it is typically 5/12 V open-collector (would damage the GPIO).
+// Cleanest long-term: read RPM from rusEFI over CAN and bypass this pulse path entirely.
+const float PULSES_PER_REV_ENG = 60.0f;
 
 class SpeedReader {
   private:
