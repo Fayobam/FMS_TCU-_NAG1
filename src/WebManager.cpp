@@ -68,12 +68,16 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         resp["clEn"]   = p->cl_spc_enable; resp["clKp"] = p->cl_spc_kp;
         resp["transVariant"] = p->trans_variant;   // 0=small NAG, 1=big NAG
         resp["tcStall"] = p->tc_stall_mult_x100; resp["tcCoupSr"] = p->tc_coupling_sr_x100;
+        resp["clPwr"] = p->cl_pressure_enable; resp["pFull"] = p->p_full_scale_mbar;
+        JsonArray ck = resp["clutchK"].to<JsonArray>();
+        JsonArray rs = resp["relSpring"].to<JsonArray>();
+        for (int i = 0; i < 4; i++) { ck.add(p->clutch_k_x100[i]); rs.add(p->release_spring_mbar[i]); }
         resp["tpsC"] = p->tps_closed_v; resp["tpsW"] = p->tps_wot_v;
         resp["map0"] = p->map_kpa_at_0v; resp["mapV"] = p->map_kpa_per_volt;
         JsonArray fp = resp["fillp"].to<JsonArray>();
         JsonArray ft = resp["fillt"].to<JsonArray>();
         for (int i = 0; i < 4; i++) { fp.add(p->fill_p[i]); ft.add(p->fill_t[i]); }
-        char buffer[1280];
+        char buffer[1600];
         size_t n = serializeJson(resp, buffer, sizeof(buffer));
         ws.textAll(buffer, n);
         return;
@@ -97,6 +101,11 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         if (doc["transVariant"].is<int>()) p->trans_variant = (uint8_t)constrain(doc["transVariant"].as<int>(), 0, (int)TRANS_VARIANT_COUNT - 1);
         if (doc["tcStall"].is<int>())   p->tc_stall_mult_x100  = (uint16_t)constrain(doc["tcStall"].as<int>(), 100, 350);
         if (doc["tcCoupSr"].is<int>())  p->tc_coupling_sr_x100 = (uint16_t)constrain(doc["tcCoupSr"].as<int>(), 50, 100);
+        if (doc["clPwr"].is<int>())     p->cl_pressure_enable  = (uint8_t)(doc["clPwr"].as<int>() ? 1 : 0);
+        if (doc["pFull"].is<int>())     p->p_full_scale_mbar   = (uint16_t)constrain(doc["pFull"].as<int>(), 4000, 25000);
+        { JsonArray ck = doc["clutchK"].as<JsonArray>(); JsonArray rs = doc["relSpring"].as<JsonArray>();
+          if ((int)ck.size() >= 4) for (int i=0;i<4;i++) p->clutch_k_x100[i]     = (uint16_t)constrain(ck[i].as<int>(), 200, 8000);
+          if ((int)rs.size() >= 4) for (int i=0;i<4;i++) p->release_spring_mbar[i] = (uint16_t)constrain(rs[i].as<int>(), 0, 5000); }
         if (doc["tmax"].is<int>())    p->t_max_ref   = (uint16_t)constrain(doc["tmax"].as<int>(), 100, 1200);
         if (doc["tpsC"].is<float>())  p->tps_closed_v = doc["tpsC"].as<float>();
         if (doc["tpsW"].is<float>())  p->tps_wot_v    = doc["tpsW"].as<float>();

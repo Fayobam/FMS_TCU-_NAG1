@@ -227,6 +227,8 @@
             <label class="ep-field">CL gain Kp (%/ratio) <input type="number" min="0" max="1000" id="ep-clKp"></label>
             <label class="ep-field">Conv. stall mult (×100) <input type="number" min="100" max="350" id="ep-tcStall"></label>
             <label class="ep-field">Conv. coupling SR (×100) <input type="number" min="50" max="100" id="ep-tcCoupSr"></label>
+            <label class="ep-field">Pressure model (torque→P) <input type="checkbox" id="ep-clPwr" style="width:auto;transform:scale(1.3);margin-left:6px;"></label>
+            <label class="ep-field">Line @100% (mBar) <input type="number" min="4000" max="25000" id="ep-pFull"></label>
             <label class="ep-field">T_max ref (Nm) <input type="number" id="ep-tmax"></label>
             <label class="ep-field">TPS closed (V) <input type="number" step="0.01" id="ep-tpsC"></label>
             <label class="ep-field">TPS WOT (V) <input type="number" step="0.01" id="ep-tpsW"></label>
@@ -235,6 +237,8 @@
         </div>
         <div style="margin-top:0.8rem; font-size:0.7rem; color:var(--slate-400); font-weight:700;">Baseline upshift fill (per shift)</div>
         <div id="ep-fill" style="display:grid; grid-template-columns:repeat(4,1fr); gap:0.6rem; margin-top:0.4rem;"></div>
+        <div style="margin-top:0.8rem; font-size:0.7rem; color:var(--slate-400); font-weight:700;">Clutch pressure model — capacity (mBar/Nm ×100) + return spring (mBar), per shift</div>
+        <div id="ep-clutch" style="display:grid; grid-template-columns:repeat(4,1fr); gap:0.6rem; margin-top:0.4rem;"></div>
     </main>
 
     <!-- SHIFT CHART TAB -->
@@ -384,14 +388,23 @@
                 tqInputs.push(document.getElementById(`tq_${i}_${j}`));
         }
 
+        const SHIFT_LABELS = ['1→2','2→3','3→4','4→5'];
         function buildFillFields(){
-            const labels = ['1→2','2→3','3→4','4→5'];
             const wrap = document.getElementById('ep-fill');
             wrap.innerHTML = '';
             for(let i=0;i<4;i++){
-                wrap.innerHTML += `<div class="ep-field">${labels[i]} fill
+                wrap.innerHTML += `<div class="ep-field">${SHIFT_LABELS[i]} fill
                     <input type="number" id="ep-fillp-${i}" placeholder="P%">
                     <input type="number" id="ep-fillt-${i}" placeholder="ms"></div>`;
+            }
+        }
+        function buildClutchFields(){
+            const wrap = document.getElementById('ep-clutch');
+            wrap.innerHTML = '';
+            for(let i=0;i<4;i++){
+                wrap.innerHTML += `<div class="ep-field">${SHIFT_LABELS[i]}
+                    <input type="number" id="ep-clutchK-${i}" placeholder="k×100">
+                    <input type="number" id="ep-relSpring-${i}" placeholder="spring mBar"></div>`;
             }
         }
 
@@ -415,6 +428,8 @@
             document.getElementById('ep-transVariant').value = (p.transVariant ?? 0);
             document.getElementById('ep-tcStall').value  = p.tcStall;
             document.getElementById('ep-tcCoupSr').value = p.tcCoupSr;
+            document.getElementById('ep-clPwr').checked  = !!p.clPwr;
+            document.getElementById('ep-pFull').value    = p.pFull;
             document.getElementById('ep-tmax').value    = p.tmax;
             document.getElementById('ep-tpsC').value    = p.tpsC;
             document.getElementById('ep-tpsW').value    = p.tpsW;
@@ -425,15 +440,22 @@
                 document.getElementById(`ep-fillp-${i}`).value = p.fillp[i];
                 document.getElementById(`ep-fillt-${i}`).value = p.fillt[i];
             }
+            buildClutchFields();
+            for(let i=0;i<4;i++){
+                document.getElementById(`ep-clutchK-${i}`).value  = (p.clutchK ? p.clutchK[i] : '');
+                document.getElementById(`ep-relSpring-${i}`).value = (p.relSpring ? p.relSpring[i] : '');
+            }
         }
 
         function flashProfile(){
             if(!profile) return;
             const torque = tqInputs.map(x => parseInt(x.value)||0);
-            const fillp = [], fillt = [];
+            const fillp = [], fillt = [], clutchK = [], relSpring = [];
             for(let i=0;i<4;i++){
                 fillp.push(parseInt(document.getElementById(`ep-fillp-${i}`).value)||0);
                 fillt.push(parseInt(document.getElementById(`ep-fillt-${i}`).value)||0);
+                clutchK.push(parseInt(document.getElementById(`ep-clutchK-${i}`).value)||2500);
+                relSpring.push(parseInt(document.getElementById(`ep-relSpring-${i}`).value)||600);
             }
             ws.send(JSON.stringify({ cmd:"set_profile", torque,
                 overrev: parseInt(document.getElementById('ep-overrev').value)||6300,
@@ -450,7 +472,9 @@
                 tpsW: parseFloat(document.getElementById('ep-tpsW').value)||2.9,
                 map0: parseFloat(document.getElementById('ep-map0').value)||-10,
                 mapV: parseFloat(document.getElementById('ep-mapV').value)||86,
-                fillp, fillt }));
+                clPwr: document.getElementById('ep-clPwr').checked ? 1 : 0,
+                pFull: parseInt(document.getElementById('ep-pFull').value)||16000,
+                fillp, fillt, clutchK, relSpring }));
             const btn = event.target;
             btn.innerText = "Flashed!"; btn.style.background = "var(--emerald)";
             setTimeout(()=>{ btn.innerText="Flash to Hardware"; btn.style.background="var(--cyan)"; }, 2000);

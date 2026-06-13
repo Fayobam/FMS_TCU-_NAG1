@@ -65,6 +65,14 @@ void EngineProfile::seedDefaults() {
     d.tc_stall_mult_x100  = 200;     // ~2.0× torque multiplication at stall (722.6 converter; tune)
     d.tc_coupling_sr_x100 = 85;      // multiplication → 1.0 by 0.85 speed ratio (coupling point)
 
+    // Physical pressure model (Phase 3) — OFF by default; heuristic % path stays in control
+    // until bench-validated. Seeds: ~24-30 mBar/Nm (≈300 Nm → ~8 bar), bigger drum (3-4) firmer.
+    d.cl_pressure_enable = 0;
+    d.clutch_k_x100[0] = 2400; d.clutch_k_x100[1] = 2600; d.clutch_k_x100[2] = 3000; d.clutch_k_x100[3] = 2400;
+    d.release_spring_mbar[0] = 600; d.release_spring_mbar[1] = 700;
+    d.release_spring_mbar[2] = 900; d.release_spring_mbar[3] = 600;
+    d.p_full_scale_mbar = 16000;     // ~16 bar line at 100% command (bench-measure the real curve)
+
     d.tps_closed_v    = 0.50f;
     d.tps_wot_v       = 2.90f;
     d.map_kpa_at_0v   = -10.0f;

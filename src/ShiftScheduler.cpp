@@ -222,6 +222,7 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     // Capture the operating cell NOW, at initiation (torque-binned). Adaptation runs
     // in END — by then RPM/torque have moved, so binning there would mis-attribute.
     _load_at_start = telemetry.load_pct;
+    _input_at_start = telemetry.t_input_nm;   // input torque the clutches see (pressure model)
     _torque_bin    = engineProfile.torqueBin(telemetry.engine_rpm, telemetry.map_kpa);
     _ratio_old     = getTargetRatio(_from_gear);
     _ratio_target  = getTargetRatio(target_gear);
@@ -316,7 +317,14 @@ void ShiftScheduler::classifyAndProfile(uint8_t from, uint8_t to, bool is_upshif
         if (power) {
             _fill_p = (uint8_t)constrain((int)base_fill_p, 0, 100);
             _fill_t_ms = base_fill_t;
-            _apply_pct = (uint8_t)constrain(20.0f + 0.55f * load, 0.0f, 100.0f);
+            // Apply pressure: physical model (pressure to carry input torque) when enabled,
+            // else the load-% heuristic. Adaptation apply_trim is added below either way.
+            if (engineProfile.clPressureEnable()) {
+                float mbar = engineProfile.clutchApplyMbar(idx, _input_at_start, telemetry.atf_temp_c);
+                _apply_pct = engineProfile.mbarToPct(mbar);
+            } else {
+                _apply_pct = (uint8_t)constrain(20.0f + 0.55f * load, 0.0f, 100.0f);
+            }
             _inertia_slope = 2.0f + 0.02f * load;                       // %/20ms tick
             _inertia_target_ms = (uint16_t)constrain(400.0f - 1.5f * load, 220.0f, 400.0f);
         } else {
@@ -801,6 +809,12 @@ void ShiftScheduler::applyShiftMPC() {
     float mpc;
     if (_sclass == SC_COAST_UP || _sclass == SC_COAST_DOWN) {
         mpc = cruise;                                   // coast: no boost authority needed
+    } else if (engineProfile.clPressureEnable()) {
+        // Physical model: line must at least support the apply clutch carrying input torque
+        // through the overlap (a torque-correct lower bound, vs the flat load-% heuristic).
+        uint8_t idx = constrain(_is_upshift ? (_from_gear - 1) : (telemetry.target_gear - 1), 0, 3);
+        float mbar = engineProfile.clutchApplyMbar(idx, _input_at_start, telemetry.atf_temp_c);
+        mpc = fmaxf(cruise, (float)engineProfile.mbarToPct(mbar));
     } else {
         float base = (_is_upshift ? 40.0f : 50.0f) + 0.5f * _load_at_start;
         mpc = fmaxf(cruise, base);

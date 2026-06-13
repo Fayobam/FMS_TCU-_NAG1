@@ -46,6 +46,7 @@ class ShiftScheduler {
     bool          _prev_was_power;  // class hysteresis between the POWER/COAST thresholds
     uint8_t  _from_gear;
     float    _load_at_start;        // load_pct (0-100, torque-based) captured at initiation
+    float    _input_at_start;       // input/turbine torque (Nm) at initiation — pressure model (Phase 3)
     uint8_t  _torque_bin;           // 4-wide torque bin captured at initiation (adaptation key)
     float    _ratio_old;            // source-gear ratio
     float    _ratio_target;         // target-gear ratio

@@ -120,8 +120,16 @@ Original note:
 - `t_est` becomes engine torque × factor when TCC is open (≈1.0 locked). Improves the torque value
   feeding load bins, money-shift, and (later) the pressure model — most at launch/low gears.
 
-### Phase 3 — Physical pressure model (the big lever) — MEDIUM risk, HIGHEST value
-Incremental, flag-gated (`cl_pressure_model_enable`):
+### Phase 3 — Physical pressure model (the big lever) — STARTED (V19), flag-gated
+**Landed (V19, `cl_pressure_enable` default OFF):** EngineProfile calibration (`clutch_k[4]`,
+`release_spring[4]`, `p_full_scale_mbar`) + model math (`clutchApplyMbar` = k·T·atfMult + spring;
+`mbarToPct`); power-upshift **apply SPC** and **shift MPC** derive from input torque when the flag
+is on, else the heuristic path is unchanged. Dashboard cal added.
+**Still TODO:** (3d-full) MPC computed from the *off-going* clutch specifically (now a same-idx
+proxy); downshift-catch pressures from the model; bench-measure the real `mBar→%` solenoid curve
+(currently a linear `p_full_scale` proxy); split apply vs release clutch constants; then tune
+`clutch_k` so a known torque holds without slip and A/B vs heuristic.
+Original sub-steps:
 - **3a.** `EngineProfile` calibration block: `friction_k[8]`, coefficients, `return_spring[8]`,
   and the `mBar→%` solenoid curves. Seed `friction_k`/springs from UN52 small-NAG values where
   mappable; otherwise reasonable guesses (they're adapted later).
