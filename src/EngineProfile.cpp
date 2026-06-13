@@ -43,6 +43,8 @@ void EngineProfile::seedDefaults() {
     d.lug_rpm         = 1100;
     d.eng_ppr         = 60;     // M111 60-tooth default; use rusEFI's clean tach out, NOT raw 60-2
     d.out_ppr         = 24;     // current custom output-shaft wheel; 48-60 recommended
+    d.cl_spc_enable   = 1;      // closed-loop SPC in upshift INERTIA (feedforward + P trim)
+    d.cl_spc_kp       = 80;     // SPC%-trim per unit ratio error (bench-tune; 0 = pure open-loop)
 
     d.tps_closed_v    = 0.50f;
     d.tps_wot_v       = 2.90f;

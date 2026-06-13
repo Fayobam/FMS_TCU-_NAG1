@@ -20,6 +20,7 @@ class WebManager {
     unsigned long _last_broadcast_time;
 
     void buildAndSendTelemetryJSON();
+    void sendShiftTrace();   // one-shot per-shift datalog dump (Core 0)
     void handleWebSocketMessage(void *arg, uint8_t *data, size_t len);
 
   public:

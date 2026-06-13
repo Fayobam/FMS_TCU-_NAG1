@@ -65,6 +65,7 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         for (int j = 0; j < EP_MAP_BINS; j++) mb.add(p->map_bp[j]);
         resp["tmax"] = p->t_max_ref; resp["overrev"] = p->overrev_rpm; resp["lug"] = p->lug_rpm;
         resp["engPpr"] = p->eng_ppr; resp["outPpr"] = p->out_ppr;
+        resp["clEn"]   = p->cl_spc_enable; resp["clKp"] = p->cl_spc_kp;
         resp["tpsC"] = p->tps_closed_v; resp["tpsW"] = p->tps_wot_v;
         resp["map0"] = p->map_kpa_at_0v; resp["mapV"] = p->map_kpa_per_volt;
         JsonArray fp = resp["fillp"].to<JsonArray>();
@@ -88,6 +89,8 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         // Sensor PPR: SpeedReader hot-applies these on its next update (no reboot).
         if (doc["engPpr"].is<int>())  p->eng_ppr     = (uint16_t)constrain(doc["engPpr"].as<int>(), 1, 240);
         if (doc["outPpr"].is<int>())  p->out_ppr     = (uint16_t)constrain(doc["outPpr"].as<int>(), 1, 240);
+        if (doc["clEn"].is<int>())    p->cl_spc_enable = (uint8_t)(doc["clEn"].as<int>() ? 1 : 0);
+        if (doc["clKp"].is<int>())    p->cl_spc_kp   = (uint16_t)constrain(doc["clKp"].as<int>(), 0, 1000);
         if (doc["tmax"].is<int>())    p->t_max_ref   = (uint16_t)constrain(doc["tmax"].as<int>(), 100, 1200);
         if (doc["tpsC"].is<float>())  p->tps_closed_v = doc["tpsC"].as<float>();
         if (doc["tpsW"].is<float>())  p->tps_wot_v    = doc["tpsW"].as<float>();
@@ -165,7 +168,37 @@ void WebManager::broadcastTelemetry() {
         // or when a P/N-entry/web edit forced it — not per shift (NVS wear).
         if (_adaptives) _adaptives->processFlush();
     }
+    sendShiftTrace();     // one-shot when a shift trace is ready (not rate-gated)
     ws.cleanupClients();
+}
+
+// Serialize the high-rate per-shift datalog (captured by Core 1) and push it to the
+// dashboard as one columnar `shift_trace` message. Core 1 won't touch the ring while
+// `ready` is set, so reading it here is race-free; we clear `ready` when done.
+void WebManager::sendShiftTrace() {
+    if (!shiftTrace.ready) return;
+    if (ws.count() == 0) { shiftTrace.ready = false; return; }   // no client → drop it
+    uint16_t n = shiftTrace.count;
+
+    JsonDocument doc;
+    doc["type"] = "shift_trace";
+    doc["cls"] = shiftTrace.shift_class; doc["pd"] = shiftTrace.pd_type;
+    doc["from"] = shiftTrace.from_gear;  doc["to"] = shiftTrace.to_gear;  doc["n"] = n;
+    JsonArray t = doc["t"].to<JsonArray>(), ph = doc["ph"].to<JsonArray>();
+    JsonArray spc = doc["spc"].to<JsonArray>(), mpc = doc["mpc"].to<JsonArray>();
+    JsonArray ratio = doc["ratio"].to<JsonArray>(), eng = doc["eng"].to<JsonArray>();
+    JsonArray turb = doc["turb"].to<JsonArray>(), out = doc["out"].to<JsonArray>();
+    JsonArray cle = doc["clErr"].to<JsonArray>(), fl = doc["fl"].to<JsonArray>();
+    for (uint16_t i = 0; i < n; i++) {
+        TraceSample &s = shiftTrace.s[i];
+        t.add(s.t_ms); ph.add(s.phase); spc.add(s.spc); mpc.add(s.mpc);
+        ratio.add(s.ratio_x1000); eng.add(s.eng); turb.add(s.turb); out.add(s.out);
+        cle.add(s.cl_err_x1000); fl.add(s.flags);
+    }
+    String buf;
+    serializeJson(doc, buf);
+    ws.textAll(buf);
+    shiftTrace.ready = false;   // consumed; Core 1 may capture the next shift
 }
 
 void WebManager::buildAndSendTelemetryJSON() {

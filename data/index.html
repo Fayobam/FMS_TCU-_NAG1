@@ -217,6 +217,8 @@
             <label class="ep-field">Lug RPM <input type="number" id="ep-lug"></label>
             <label class="ep-field">Engine PPR (pulses/rev) <input type="number" min="1" max="240" id="ep-engPpr"></label>
             <label class="ep-field">Output PPR (pulses/rev) <input type="number" min="1" max="240" id="ep-outPpr"></label>
+            <label class="ep-field">Closed-loop SPC <input type="checkbox" id="ep-clEn" style="width:auto;transform:scale(1.3);margin-left:6px;"></label>
+            <label class="ep-field">CL gain Kp (%/ratio) <input type="number" min="0" max="1000" id="ep-clKp"></label>
             <label class="ep-field">T_max ref (Nm) <input type="number" id="ep-tmax"></label>
             <label class="ep-field">TPS closed (V) <input type="number" step="0.01" id="ep-tpsC"></label>
             <label class="ep-field">TPS WOT (V) <input type="number" step="0.01" id="ep-tpsW"></label>
@@ -240,7 +242,12 @@
                     <span><span style="color:var(--emerald);">&#9632;</span> Eng/Turb</span>
                 </div>
             </div>
-            <div id="phase-badge" style="font-size:0.65rem; font-weight:800; letter-spacing:0.08em; padding:3px 12px; border-radius:999px; background:rgba(0,0,0,0.3); color:var(--slate-500); transition:all 0.3s;">CRUISE</div>
+            <div style="display:flex; gap:0.6rem; align-items:center;">
+                <span id="trace-info" style="font-size:0.62rem; color:var(--slate-500); font-family:monospace;">no shift captured yet</span>
+                <button id="trace-dl" onclick="downloadTraceCSV()" disabled
+                    style="font-size:0.62rem; padding:3px 10px; border-radius:6px; cursor:pointer; opacity:0.5;">⬇ Shift CSV</button>
+                <div id="phase-badge" style="font-size:0.65rem; font-weight:800; letter-spacing:0.08em; padding:3px 12px; border-radius:999px; background:rgba(0,0,0,0.3); color:var(--slate-500); transition:all 0.3s;">CRUISE</div>
+            </div>
         </div>
         <canvas id="shift-canvas" style="flex-grow:1; width:100%; display:block; border-radius:0.75rem; min-height:320px;"></canvas>
     </main>
@@ -395,6 +402,8 @@
             document.getElementById('ep-lug').value     = p.lug;
             document.getElementById('ep-engPpr').value  = p.engPpr;
             document.getElementById('ep-outPpr').value  = p.outPpr;
+            document.getElementById('ep-clEn').checked  = !!p.clEn;
+            document.getElementById('ep-clKp').value    = p.clKp;
             document.getElementById('ep-tmax').value    = p.tmax;
             document.getElementById('ep-tpsC').value    = p.tpsC;
             document.getElementById('ep-tpsW').value    = p.tpsW;
@@ -420,6 +429,8 @@
                 lug:     parseInt(document.getElementById('ep-lug').value)||1100,
                 engPpr:  parseInt(document.getElementById('ep-engPpr').value)||60,
                 outPpr:  parseInt(document.getElementById('ep-outPpr').value)||24,
+                clEn:    document.getElementById('ep-clEn').checked ? 1 : 0,
+                clKp:    parseInt(document.getElementById('ep-clKp').value)||0,
                 tmax:    parseInt(document.getElementById('ep-tmax').value)||450,
                 tpsC: parseFloat(document.getElementById('ep-tpsC').value)||0.5,
                 tpsW: parseFloat(document.getElementById('ep-tpsW').value)||2.9,
@@ -432,25 +443,73 @@
         }
 
         // ----------------------------------------------------
+        // HIGH-RATE SHIFT DATALOG (received once per shift)
+        // ----------------------------------------------------
+        let lastTrace = null;
+        const PHASE_NAMES = ['CRUISE','PREP','FILL','TORQUE','INERTIA','RELEASE','CATCH','LOCK','END'];
+        const TRACE_CLASS = ['POWER_UP','COAST_UP','POWER_DOWN','COAST_DOWN'];
+        const TRACE_PD = ['','SPRAG','TIMED'];
+        function onShiftTrace(d) {
+            lastTrace = d;
+            let name = (TRACE_CLASS[d.cls] || '?');
+            if (d.cls === 2 && d.pd) name += '/' + (TRACE_PD[d.pd] || '');
+            const dt = (d.n > 1) ? Math.round(d.t[d.n-1] / (d.n-1)) : 0;
+            document.getElementById('trace-info').innerText =
+                `${d.from}→${d.to} ${name} · ${d.n} samp @~${dt}ms`;
+            const btn = document.getElementById('trace-dl');
+            btn.disabled = false; btn.style.opacity = '1';
+        }
+        function downloadTraceCSV() {
+            if (!lastTrace) return;
+            const d = lastTrace;
+            let csv = 't_ms,phase,spc,mpc,ratio,eng,turb,out,cl_err,flags\n';
+            for (let i = 0; i < d.n; i++) {
+                csv += [d.t[i], PHASE_NAMES[d.ph[i]] || d.ph[i], d.spc[i], d.mpc[i],
+                        (d.ratio[i]/1000).toFixed(3), d.eng[i], d.turb[i], d.out[i],
+                        (d.clErr[i]/1000).toFixed(3), d.fl[i]].join(',') + '\n';
+            }
+            const cls = (TRACE_CLASS[d.cls] || 'shift');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `shift_${d.from}-${d.to}_${cls}_${d.n}.csv`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+
+        // ----------------------------------------------------
         // WEBSOCKET LOGIC (V6.1)
         // ----------------------------------------------------
-        const ws = new WebSocket(`ws://${window.location.hostname}/ws`);
-        
-        ws.onopen = () => {
+        // Auto-(re)connecting WebSocket: survives a TCU reboot / flash / WiFi drop
+        // without a manual page refresh. onclose schedules a retry; a staleness
+        // watchdog forces a reconnect if the socket looks open but stops streaming.
+        let ws;
+        let lastMsgTime = 0;
+        function connect() {
+            ws = new WebSocket(`ws://${window.location.hostname}/ws`);
+            ws.onopen    = wsOpen;
+            ws.onclose   = wsClose;
+            ws.onerror   = () => { try { ws.close(); } catch (e) {} };  // → onclose → retry
+            ws.onmessage = wsMessage;
+        }
+        function wsOpen() {
             document.getElementById('connection-dot').className = 'connection-dot conn-live';
             document.getElementById('connection-text').style.color = 'var(--emerald)';
             document.getElementById('connection-text').innerText = 'LIVE';
+            lastMsgTime = Date.now();
             requestCells();     // adaptation trims
             requestProfile();   // engine torque table + cal
-        };
-
-        ws.onclose = () => {
-            document.getElementById('connection-dot').className = 'connection-dot conn-off';
-            document.getElementById('connection-text').style.color = 'var(--rose)';
-            document.getElementById('connection-text').innerText = 'OFFLINE';
         }
 
-        ws.onmessage = (event) => {
+        function wsClose() {
+            document.getElementById('connection-dot').className = 'connection-dot conn-off';
+            document.getElementById('connection-text').style.color = 'var(--rose)';
+            document.getElementById('connection-text').innerText = 'OFFLINE — reconnecting…';
+            setTimeout(connect, 1500);   // keep retrying until the TCU is back
+        }
+
+        function wsMessage(event) {
+            lastMsgTime = Date.now();
             const data = JSON.parse(event.data);
             
             if (data.type === "telemetry") {
@@ -536,7 +595,19 @@
             else if (data.type === "profile_data") {
                 renderProfile(data);
             }
-        };
+            else if (data.type === "shift_trace") {
+                onShiftTrace(data);
+            }
+        }
+
+        // Kick off the connection + a watchdog that forces a reconnect if the stream
+        // stalls while the socket still looks open (e.g. TCU hung, not cleanly closed).
+        connect();
+        setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMsgTime > 2500) {
+                try { ws.close(); } catch (e) {}   // → onclose → reconnect
+            }
+        }, 1000);
 
     // ================================================================
     // SHIFT CHART ENGINE

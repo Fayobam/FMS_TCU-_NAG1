@@ -75,6 +75,7 @@ class ShiftScheduler {
     bool     _harsh_detected;          // upshift inertia too short / decel spike
     uint16_t _flare_over_ms;           // consecutive ms the flare condition has held
     uint16_t _bind_over_ms;            // consecutive ms the bind condition has held
+    float    _cl_err = 0.0f;           // closed-loop SPC schedule error (INERTIA; 0 elsewhere)
 
     bool  _prev_pn_raw;             // edge-detect for the engagement (lever) window
     unsigned long _engage_grace_until_ms; // suppress slip-limp during D-engagement sync
@@ -119,6 +120,7 @@ class ShiftScheduler {
     bool beginShift(uint8_t target_gear, bool is_upshift, const char* source);
     void classifyAndProfile(uint8_t from, uint8_t to, bool is_upshift);  // class + profile scalars
     void runShiftPhases(unsigned long t_ms, bool ptick, bool new_sample);  // the class-aware phase engine
+    void captureTrace();                      // high-rate datalog sample (bench tuning)
     void setSPC(float pct);                   // write _spc_cmd + command solenoid
     void applyShiftMPC();                     // MPC rule during a shift (per class/load)
     void finishShift();                       // latch gear, schedule END decay, adapt

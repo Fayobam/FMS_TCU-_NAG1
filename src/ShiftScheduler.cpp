@@ -200,7 +200,46 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     _current_phase = PHASE_PREP;     // all classes start in PREP
     applyShiftMPC();                 // lead the gate: set line/overlap authority on THIS tick,
                                      // not the next 20ms ptick (spec PREP intent) — B-7
+    _cl_err = 0.0f;
+
+    // Start the high-rate datalog for this shift. Skip if a prior trace is still
+    // waiting for Core 0 to send it, so we never clobber an undumped trace.
+    if (!shiftTrace.ready) {
+        shiftTrace.count = 0;
+        shiftTrace.start_ms = millis();
+        shiftTrace.last_sample_ms = 0;
+        shiftTrace.shift_class = (uint8_t)_sclass;
+        shiftTrace.pd_type   = (uint8_t)_pd_type;
+        shiftTrace.from_gear = _from_gear;
+        shiftTrace.to_gear   = target_gear;
+        shiftTrace.capturing = true;
+    } else {
+        shiftTrace.capturing = false;
+    }
     return true;
+}
+
+// High-rate per-shift datalog: one compact sample every TRACE_INTERVAL_MS (~500 Hz),
+// capturing the COMMANDED pressures + speeds + ratio + closed-loop error. The ring is
+// dumped once after the shift by Core 0 (TCU_Data.h ShiftTrace).
+void ShiftScheduler::captureTrace() {
+    if (!shiftTrace.capturing || shiftTrace.count >= TRACE_MAX) return;
+    unsigned long now = millis();
+    if (shiftTrace.count > 0 && (now - shiftTrace.last_sample_ms) < TRACE_INTERVAL_MS) return;
+    shiftTrace.last_sample_ms = now;
+    TraceSample &s = shiftTrace.s[shiftTrace.count];
+    s.t_ms  = (uint16_t)constrain((long)(now - _shift_stopwatch_start), 0L, 65535L);
+    s.phase = (uint8_t)_current_phase;
+    s.spc   = (uint8_t)telemetry.shift_pressure_pct;
+    s.mpc   = (uint8_t)telemetry.line_pressure_pct;
+    s.flags = (telemetry.flare_detected ? 1 : 0) | (telemetry.bind_detected ? 2 : 0) |
+              (_harsh_detected ? 4 : 0);
+    s.ratio_x1000 = (uint16_t)constrain((int)(telemetry.live_ratio * 1000.0f), 0, 65535);
+    s.eng   = (uint16_t)constrain((int)telemetry.engine_rpm,  0, 65535);
+    s.turb  = (uint16_t)constrain((int)telemetry.turbine_rpm, 0, 65535);
+    s.out   = (uint16_t)constrain((int)telemetry.output_rpm,  0, 65535);
+    s.cl_err_x1000 = (int16_t)constrain((int)(_cl_err * 1000.0f), -32768, 32767);
+    shiftTrace.count = shiftTrace.count + 1;
 }
 
 // ----------------------------------------------------------------------------
@@ -674,6 +713,15 @@ void ShiftScheduler::update() {
         runShiftPhases(time_in_phase_ms, ptick, new_sample);
     }
 
+    // High-rate datalog: sample through the shift; finalize (hand to Core 0) when it
+    // returns to cruise. runShiftPhases may have ended the shift this tick.
+    if (_current_phase != PHASE_CRUISING) {
+        captureTrace();
+    } else if (shiftTrace.capturing) {
+        shiftTrace.capturing = false;
+        shiftTrace.ready = true;     // Core 0 serializes + sends the trace
+    }
+
     // rusEFI torque-cut: only during a high-load power-up inertia phase (spec §9).
     _solenoids->setTorqueCut(_current_phase == PHASE_INERTIA &&
                              _sclass == SC_POWER_UP &&
@@ -735,6 +783,7 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
         }
         if (_flare_over_ms >= RATIO_EVENT_CONFIRM_MS) telemetry.flare_detected = true;
     }
+    if (_current_phase != PHASE_INERTIA) _cl_err = 0.0f;   // closed-loop only sweeps in INERTIA
 
     switch (_current_phase) {
         case PHASE_PREP:
@@ -760,8 +809,21 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
             }
             break;
 
-        case PHASE_INERTIA:                           // upshift: ramp clutch, pull ratio home
-            if (ptick) setSPC(_spc_cmd + _inertia_slope);
+        case PHASE_INERTIA: {                         // upshift: ramp clutch, pull ratio home
+            // CLOSED-LOOP SPC (V16): feedforward ramp (_inertia_slope) + proportional trim toward
+            // a time-scheduled ratio sweep from _ratio_old → _ratio_target over _inertia_target_ms.
+            // Behind schedule (ratio still high) → more clamp; ahead → less. Trim is bounded and
+            // applied only on the 20 ms ptick (ATSG quantization). Kp=0 / disabled ⇒ pure ramp.
+            float frac = (_inertia_target_ms > 0)
+                       ? fminf((float)t / (float)_inertia_target_ms, 1.0f) : 1.0f;
+            float scheduled = _ratio_old + (_ratio_target - _ratio_old) * frac;
+            _cl_err = telemetry.live_ratio - scheduled;   // upshift: >0 = behind (ratio too high)
+            if (ptick) {
+                _spc_cmd = constrain(_spc_cmd + _inertia_slope, 0.0f, 100.0f);   // feedforward base
+                float trim = engineProfile.clSpcEnable()
+                           ? constrain(engineProfile.clSpcKp() * _cl_err, -25.0f, 25.0f) : 0.0f;
+                _solenoids->setShiftPressure((uint8_t)constrain(_spc_cmd + trim, 0.0f, 100.0f));
+            }
             if (telemetry.live_ratio <= _ratio_target + 0.03f) {
                 if (t < (unsigned long)(0.6f * _inertia_target_ms)) _harsh_detected = true; // too firm
                 finishShift();
@@ -769,6 +831,7 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
                 finishShift();                        // ratio backstop
             }
             break;
+        }
 
         case PHASE_RELEASE: {                         // downshift: off-going exhausts, turbine flares
             setSPC(_release_spc);

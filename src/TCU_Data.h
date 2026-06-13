@@ -277,6 +277,39 @@ struct TCU_Telemetry {
 
 extern TCU_Telemetry telemetry;
 
+// ============================================================================
+// HIGH-RATE SHIFT DATALOGGER (bench tuning). Core 1 captures a compact sample
+// every TRACE_INTERVAL_MS during a shift into a ring; on shift completion Core 0
+// serializes it to the dashboard as a one-shot `shift_trace` message (capture
+// fast locally, transmit slowly — no high-rate network stream needed).
+// ============================================================================
+#define TRACE_MAX          400      // samples per shift (~0.8 s at 2 ms; truncates beyond)
+#define TRACE_INTERVAL_MS  2        // 500 Hz capture (10 samples per 20 ms pressure tick)
+
+struct TraceSample {
+    uint16_t t_ms;          // ms since beginShift()
+    uint8_t  phase;         // ShiftPhase
+    uint8_t  spc;           // commanded SPC % (actual)
+    uint8_t  mpc;           // commanded line % (actual)
+    uint8_t  flags;         // bit0 flare, bit1 bind, bit2 harsh
+    uint16_t ratio_x1000;   // live_ratio × 1000
+    uint16_t eng;           // engine rpm
+    uint16_t turb;          // turbine rpm
+    uint16_t out;           // output rpm
+    int16_t  cl_err_x1000;  // closed-loop schedule error × 1000 (INERTIA; 0 elsewhere)
+};
+
+struct ShiftTrace {
+    TraceSample s[TRACE_MAX];
+    volatile uint16_t count = 0;      // samples captured this shift
+    volatile bool capturing = false;  // Core 1 actively logging
+    volatile bool ready = false;      // Core 1 done → Core 0 may serialize & send
+    uint8_t  shift_class = 0, pd_type = 0, from_gear = 0, to_gear = 0;
+    unsigned long start_ms = 0;
+    unsigned long last_sample_ms = 0;
+};
+extern ShiftTrace shiftTrace;
+
 // ----------------------------------------------------------------------------
 // Cross-core-safe status string writers (seqlock). Call ONLY from Core 1.
 // Bump seq odd → copy → bump seq even, so a Core 0 reader can detect a torn read.

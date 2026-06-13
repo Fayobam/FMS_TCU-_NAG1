@@ -21,7 +21,7 @@
 
 #define EP_RPM_BINS 8
 #define EP_MAP_BINS 8
-#define EP_MAGIC    0x4E414733u   // 'NAG3' — bump if the struct layout changes (v3: + out_ppr)
+#define EP_MAGIC    0x4E414734u   // 'NAG4' — bump if the struct layout changes (v4: + closed-loop SPC)
 
 struct EngineProfileData {
     int16_t  torque[EP_RPM_BINS][EP_MAP_BINS];  // Nm on the RPM×MAP grid
@@ -36,6 +36,8 @@ struct EngineProfileData {
     float    map_kpa_at_0v, map_kpa_per_volt;   // MAP transfer function
     uint8_t  fill_p[4];                         // baseline upshift fill pressure % (1-2,2-3,3-4,4-5)
     uint16_t fill_t[4];                         // baseline upshift fill time ms
+    uint8_t  cl_spc_enable;                     // closed-loop SPC in upshift INERTIA (0/1)
+    uint16_t cl_spc_kp;                         // P gain: SPC%-trim per unit ratio-schedule error
     uint32_t magic;                             // sanity/version tag
 };
 
@@ -63,6 +65,8 @@ class EngineProfile {
     float    mapPerV()    const { return d.map_kpa_per_volt; }
     uint8_t  fillP(uint8_t i)   { return d.fill_p[constrain((int)i,0,3)]; }
     uint16_t fillT(uint8_t i)   { return d.fill_t[constrain((int)i,0,3)]; }
+    bool     clSpcEnable() const { return d.cl_spc_enable != 0; }
+    float    clSpcKp()     const { return (float)d.cl_spc_kp; }   // SPC%-trim per unit ratio error
 
     EngineProfileData* raw() { return &d; }            // for the web tuner
 };

@@ -43,7 +43,7 @@ static bool IRAM_ATTR onCaptureISR(mcpwm_cap_channel_handle_t chan,
     if (ch->count < SR_RING_N) ch->count = ch->count + 1;
     ch->last_cap = now;
     ch->last_edge_us = esp_timer_get_time();
-    ch->edge_count++;                              // signal a genuinely-new edge landed
+    ch->edge_count = ch->edge_count + 1;           // signal a genuinely-new edge landed
     return false;
 }
 

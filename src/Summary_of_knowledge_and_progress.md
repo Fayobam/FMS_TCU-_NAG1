@@ -1,6 +1,6 @@
 # FMS TCU — Master Engineering & Firmware Manual
-**Document Version:** 7.0
-**Firmware Version:** V15 (V14 ATSG architecture + period-measurement speed sensing + walkthrough fixes)
+**Document Version:** 7.1
+**Firmware Version:** V16 (V15 + closed-loop SPC, high-rate shift datalogger, auto-reconnect UI)
 **Application:** Mercedes-Benz 722.6 (W5A330 Small NAG)
 **Powertrain:** M111 2.3L + TVS1320 Supercharger (~1.2 bar), engine on rusEFI
 **Status:** Compiles clean; bench-validation pending. Firmware logic now grounded in the
@@ -305,6 +305,7 @@ panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Tor
 | **V14.2** | **(this doc, v6.0)** Second-pass external review folded in; HANDOFF.md retired into §16 open-items tracker. |
 | **V14.3** | **Review-2 fixes implemented (A+B+C9/C10+D):** TCC rate-limit/quantize + 300 ms post-shift hold; class/torque telemetry on dashboard; Y4 garage→shift takeover; 20 Hz-sample-aware ratio detectors; power-down (PD_TIMED) bind learning; boot de-energized; MPC leads the gate; `analogReadMilliVolts` ADC; edge-triggered paddles; stale-comment/dead-code cleanup. Remaining: C-8/11/12 (bench/dyno/hardware). |
 | **V14.4** | **Engine PPR is web-editable** (EngineProfile `eng_ppr`, default 60; EP_MAGIC→'NAG2'): change the engine-RPM pulses/rev from the Engine Profile tab to match a rusEFI tach output or other source without recompiling. SpeedReader reads `engineProfile.engPpr()` live. **Note: flashing this re-seeds the EngineProfile NVS to defaults** (struct grew) — re-enter any custom torque-surface/cal values after the update. |
+| **V16** | **Bigger wins (closed-loop + observability).** (1) **Closed-loop SPC** in upshift INERTIA: feedforward ramp + proportional trim toward a time-scheduled ratio sweep (`_ratio_old`→`_ratio_target` over `_inertia_target_ms`); trim bounded ±25%, applied on the 20 ms ptick; web-tunable `cl_spc_enable`/`cl_spc_kp` (EngineProfile, default on/Kp=80). Kp=0 or disabled ⇒ pure open-loop (safe fallback). (2) **High-rate shift datalogger**: Core 1 captures a compact sample every 2 ms (~500 Hz) through each shift into a `ShiftTrace` ring; Core 0 dumps it once as a `shift_trace` message → dashboard **⬇ Shift CSV** button (t/phase/spc/mpc/ratio/eng/turb/out/cl_err/flags). (3) **WebUI auto-reconnect**: WS reconnects on drop + a staleness watchdog, no manual refresh after a flash/reboot. EP_MAGIC→'NAG4' (re-seeds NVS). Compiles clean (RAM 16.3%, Flash 85.6%). **CL gain needs bench tuning** — the CSV's `cl_err` column is the tuning signal. |
 | **V15.1** | **SpeedReader recompute every 1 ms** (was 200 Hz-gated): the open-interval decel clamp now tracks hard deceleration / low-speed shafts at full loop resolution. `speed_sample_seq` is now **edge-driven** — bumps only when a real new edge advances a ratio channel (N2/N3/OUT), via per-channel `edge_count`, so engine-only edges can't falsely trip the B-4 sprag-flat gate. Steady-state averaging unchanged. |
 | **V15** | **Cloud "V10 refinement pass" integrated** (was authored on the f9420dd snapshot; semantically re-applied over V14.4 since `git am` would conflict). Headline: **SpeedReader → MCPWM period measurement** (sub-rpm at all speeds, 200 Hz, hot-applied `eng_ppr`/`out_ppr`, ISR glitch reject / zero-speed timeout / open-interval clamp). Plus: predictive overrev (rpm + roc×lead); flare/bind need 10 ms continuous before latching (`RATIO_EVENT_CONFIRM_MS`); bind detection for **all** downshift classes (supersedes V14.3's PD_TIMED-only); PRND 20 ms debounce; staggered ADC (1 channel/tick); engagement latch only on confirmed forward range + gear-resync-from-ratio when engaged rolling; TPS-ROC over a 20 ms window; `out_ppr` web-editable; `begin()` gear=2; TCU_Data dead-code removal (linear torque fit, `MAP_KPA_*`, `UPSHIFT_FIRM_MS`, `FILL_P_PCT/FILL_T_MS`). EP_MAGIC→'NAG3' (re-seeds NVS). Kept from V14: `analogReadMilliVolts`, TCC 300 ms post-shift hold, B-4 sample-gated sprag flat (now driven at 200 Hz). Compiles clean (RAM 14.3%, Flash 85.5%). |
 
@@ -328,6 +329,18 @@ Bench before road:
 - ☐ Re-verify TCC ramp (my V14.3 rates: +2/−10 per tick + 300 ms post-shift hold) on a scope.
 - ☐ Sanity-check that `SPRAG_FLAT_RATIO_DELTA=0.004` (now a ~5 ms per-sample band) still detects
   a real 3→2 sprag catch — retuned from 0.02 when samples went 50 ms→5 ms.
+
+### V16 (closed-loop SPC) — tune on the bench using the new datalog
+- ☐ **Tune `cl_spc_kp`** (Engine Profile tab, live): pull a power upshift, hit **⬇ Shift CSV**, plot
+  `cl_err` vs `t_ms`. Goal: `cl_err` stays small through INERTIA with no SPC oscillation. Too low =
+  sluggish (ratio lags schedule, `cl_err` stays positive); too high = SPC hunts / `cl_err` rings.
+  Start 80, walk up; if it oscillates, halve it. `clEn` off = pure open-loop A/B reference.
+- ☐ Confirm the ±25% trim clamp is never the limiting factor at sane Kp (if it saturates, the
+  feedforward `_inertia_slope`/fill is wrong, not the gain).
+- ☐ Closed-loop is **upshift INERTIA only** for now; downshift CATCH stays open-loop (future item).
+- ☐ Verify the datalogger never drops a needed trace: back-to-back shifts skip capture if the prior
+  trace hasn't been sent (`shiftTrace.ready`) — expected, but confirm it's not masking shifts you
+  care about (the `trace-info` line shows the last captured shift).
 
 ### A — fix before bench
 - ✅ **1. TCC not rate-limited.** *(done — commit pending)* `updateTCC(ptick)` now moves only on

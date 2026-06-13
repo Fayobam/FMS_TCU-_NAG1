@@ -20,6 +20,7 @@
 // 1. GLOBAL OBJECTS
 // ============================================================================
 TCU_Telemetry telemetry;
+ShiftTrace    shiftTrace;       // high-rate per-shift datalog ring (bench tuning)
 EngineProfile engineProfile;   // per-engine torque table + limits + sensor cal (NVS)
 
 SolenoidDriver solenoids(PIN_MPC, PIN_SPC, PIN_TCC, PIN_Y3, PIN_Y4, PIN_Y5, PIN_RP_LOCK);
