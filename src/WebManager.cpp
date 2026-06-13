@@ -159,9 +159,11 @@ static void readStatusString(const volatile uint8_t &seq, const char *src, char 
 }
 
 void WebManager::broadcastTelemetry() {
-    // 100 Hz (10 ms gate) — matches the dashboard chart sample design and the
-    // documented stream rate. Was 100 ms (10 Hz), 10× slower than every doc claim.
-    if (millis() - _last_broadcast_time >= 10) {
+    // ~33 Hz (30 ms gate). The live gauges and the 6 s rolling chart are perfectly
+    // smooth at this rate, and it cuts WebSocket queue pressure ~3× vs the old 100 Hz
+    // flood — high-rate telemetry was what overflowed a slow client's TX queue. The
+    // high-fidelity per-shift data goes out separately as the columnar shift_trace.
+    if (millis() - _last_broadcast_time >= 30) {
         buildAndSendTelemetryJSON();
         _last_broadcast_time = millis();
         // Persist adaptation on Core 0 (NVS can block 1-10ms). Flushes on a 60s timer
@@ -243,5 +245,15 @@ void WebManager::buildAndSendTelemetryJSON() {
     char buffer[1024];
     size_t len = serializeJson(doc, buffer, sizeof(buffer));
     if (len >= sizeof(buffer) - 1) Serial.println("WARNING: Telemetry JSON truncated — increase buffer!");
-    ws.textAll(buffer, len);
+
+    // Back-pressure aware send (NOT textAll). At a steady stream rate a client whose
+    // TCP has briefly stalled (WiFi power-save, throttled background tab) would otherwise
+    // overflow its 32-deep async queue; the lib then drops/forces it and the client's
+    // staleness watchdog reconnects → the "flapping offline/online" seen on a slow PC
+    // while a faster phone stayed live. Skipping a frame for a backed-up client lets it
+    // catch up without dropping the socket; healthy clients are unaffected.
+    for (auto& client : ws.getClients()) {
+        if (client.status() == WS_CONNECTED && client.canSend())
+            client.text(buffer, len);
+    }
 }

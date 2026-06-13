@@ -604,7 +604,10 @@
         // stalls while the socket still looks open (e.g. TCU hung, not cleanly closed).
         connect();
         setInterval(() => {
-            if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMsgTime > 2500) {
+            // 4s tolerance: a genuine disconnect fires onclose immediately; this only
+            // catches a socket that looks OPEN but went silent (TCU hung). Generous
+            // enough that a brief WiFi/power-save hiccup no longer flaps the status.
+            if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMsgTime > 4000) {
                 try { ws.close(); } catch (e) {}   // → onclose → reconnect
             }
         }, 1000);
