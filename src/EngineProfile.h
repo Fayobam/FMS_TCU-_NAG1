@@ -22,7 +22,7 @@
 
 #define EP_RPM_BINS 8
 #define EP_MAP_BINS 8
-#define EP_MAGIC    0x4E414737u   // 'NAG7' — bump if the struct layout changes (v7: + pressure model)
+#define EP_MAGIC    0x4E414738u   // 'NAG8' — bump if the struct layout changes (v8: UN52 pressure coeffs)
 
 struct EngineProfileData {
     int16_t  torque[EP_RPM_BINS][EP_MAP_BINS];  // Nm on the RPM×MAP grid
@@ -42,10 +42,20 @@ struct EngineProfileData {
     uint8_t  trans_variant;                     // TransVariant: 0=small NAG (W5A330), 1=big NAG (W5A580)
     uint16_t tc_stall_mult_x100;                // converter torque multiplication at stall (×100, e.g. 200 = 2.0×)
     uint16_t tc_coupling_sr_x100;               // speed ratio (turbine/engine ×100) at the coupling point (mult→1.0)
-    // --- Physical pressure-from-torque model (UN52 backport Phase 3), per gear-pair idx 0..3 (1-2,2-3,3-4,4-5) ---
+    // --- Physical pressure-from-torque model (UN52 backport Phase 3) ---
+    // Mirrors UN52 pressure_manager: P_mBar = torque_Nm · friction / coef + return_spring.
+    // Coefficients are the authentic UN52 PRM_DEFAULT_SETTINGS; friction numerators + springs
+    // are the per-car EGS52 calibration blob (NOT in the open firmware) → reasoned seeds, tune.
+    // Per gear-pair idx 0..3 = 1-2, 2-3, 3-4, 4-5 (same physical pair handles the downshift).
     uint8_t  cl_pressure_enable;                // 0 = heuristic % path (default), 1 = torque→pressure model
-    uint16_t clutch_k_x100[4];                  // apply-clutch capacity, mBar per Nm ×100 (P = k·torque·atf + spring)
-    uint16_t release_spring_mbar[4];            // clutch return-spring preload (mBar) to overcome before bite
+    uint8_t  coef_stationary;                   // held-clutch coefficient (UN52: 100)
+    uint8_t  coef_releasing;                    // off-going (release) coefficient (UN52: 120)
+    uint8_t  coef_apply_cold;                   // oncoming coef at 29°C ATF (UN52: 185)
+    uint8_t  coef_apply_hot;                    // oncoming coef at 65°C ATF (UN52: 140)
+    uint16_t apply_friction[4];                 // oncoming-clutch friction numerator
+    uint16_t release_friction[4];               // off-going-clutch friction numerator
+    uint16_t apply_spring_mbar[4];              // oncoming return-spring preload (mBar)
+    uint16_t release_spring_mbar[4];            // off-going return-spring preload (mBar)
     uint16_t p_full_scale_mbar;                 // line pressure at 100% command (mBar→% solenoid map)
     uint32_t magic;                             // sanity/version tag
 };
@@ -82,19 +92,29 @@ class EngineProfile {
         return estimateTorque(engine_rpm, map_kpa) * converterFactor(engine_rpm, turbine_rpm);
     }
 
-    // --- Physical pressure model (Phase 3) ---
+    // --- Physical pressure model (Phase 3), UN52 form: P = T·friction/coef + spring ---
     bool clPressureEnable() const { return d.cl_pressure_enable != 0; }
-    // ATF multiplier: cold ATF is viscous & hot ATF leaks → both need more pressure (mirrors cruise).
-    static float atfMult(float atf_c) {
-        if (atf_c < 20.0f) return 1.30f; if (atf_c < 40.0f) return 1.15f;
-        if (atf_c < 80.0f) return 1.00f; if (atf_c < 110.0f) return 1.05f; return 1.20f;
+    // Oncoming (sliding) coefficient, ATF-temp interpolated 29→65 °C (cold ATF grips more → higher
+    // coef → less pressure), clamped to the endpoints — exactly UN52 PressureManager::sliding_coefficient.
+    float slidingCoef(float atf_c) const {
+        float cold = d.coef_apply_cold ? d.coef_apply_cold : 185;
+        float hot  = d.coef_apply_hot  ? d.coef_apply_hot  : 140;
+        if (atf_c <= 29.0f) return cold;
+        if (atf_c >= 65.0f) return hot;
+        return cold + (hot - cold) * ((atf_c - 29.0f) / 36.0f);
     }
-    // Clutch pressure (mBar) to carry `torque_nm` through gear-pair `idx`: P = k·T·atf + spring.
+    // Oncoming clutch: pressure (mBar) to carry `torque_nm` through gear-pair `idx`.
     float clutchApplyMbar(uint8_t idx, float torque_nm, float atf_c) const {
         idx = (idx > 3) ? 3 : idx;
-        float k = (d.clutch_k_x100[idx] ? d.clutch_k_x100[idx] : 2500) / 100.0f;   // mBar/Nm
-        float spring = d.release_spring_mbar[idx];
-        return fmaxf(0.0f, k * fmaxf(0.0f, torque_nm) * atfMult(atf_c) + (float)spring);
+        float fr = d.apply_friction[idx] ? d.apply_friction[idx] : 4000;
+        return fmaxf(0.0f, fmaxf(0.0f, torque_nm) * fr / slidingCoef(atf_c) + (float)d.apply_spring_mbar[idx]);
+    }
+    // Off-going clutch: line pressure (mBar) to HOLD `torque_nm` during overlap (release coef).
+    float clutchReleaseMbar(uint8_t idx, float torque_nm) const {
+        idx = (idx > 3) ? 3 : idx;
+        float fr = d.release_friction[idx] ? d.release_friction[idx] : 4000;
+        float coef = d.coef_releasing ? d.coef_releasing : 120;
+        return fmaxf(0.0f, fmaxf(0.0f, torque_nm) * fr / coef + (float)d.release_spring_mbar[idx]);
     }
     // Map a commanded pressure (mBar) to the solenoid's pressure-% command (0..100).
     uint8_t mbarToPct(float mbar) const {

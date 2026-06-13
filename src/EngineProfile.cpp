@@ -66,11 +66,18 @@ void EngineProfile::seedDefaults() {
     d.tc_coupling_sr_x100 = 85;      // multiplication → 1.0 by 0.85 speed ratio (coupling point)
 
     // Physical pressure model (Phase 3) — OFF by default; heuristic % path stays in control
-    // until bench-validated. Seeds: ~24-30 mBar/Nm (≈300 Nm → ~8 bar), bigger drum (3-4) firmer.
+    // until bench-validated. Coefficients = authentic UN52 PRM_DEFAULT_SETTINGS. Friction
+    // numerators + springs are the per-car EGS52 blob (not open) → reasoned seeds: friction
+    // ~4000 / coef ~150 ≈ 27 mBar/Nm (≈300 Nm → ~8 bar); bigger 3-4 drum firmer.
     d.cl_pressure_enable = 0;
-    d.clutch_k_x100[0] = 2400; d.clutch_k_x100[1] = 2600; d.clutch_k_x100[2] = 3000; d.clutch_k_x100[3] = 2400;
-    d.release_spring_mbar[0] = 600; d.release_spring_mbar[1] = 700;
-    d.release_spring_mbar[2] = 900; d.release_spring_mbar[3] = 600;
+    d.coef_stationary  = 100;        // UN52 PRM_DEFAULT_SETTINGS
+    d.coef_releasing   = 120;
+    d.coef_apply_cold  = 185;
+    d.coef_apply_hot   = 140;
+    d.apply_friction[0]   = 3800; d.apply_friction[1]   = 4200; d.apply_friction[2]   = 5000; d.apply_friction[3]   = 3800;
+    d.release_friction[0] = 3800; d.release_friction[1] = 4200; d.release_friction[2] = 5000; d.release_friction[3] = 3800;
+    d.apply_spring_mbar[0]   = 600; d.apply_spring_mbar[1]   = 700; d.apply_spring_mbar[2]   = 900; d.apply_spring_mbar[3]   = 600;
+    d.release_spring_mbar[0] = 600; d.release_spring_mbar[1] = 700; d.release_spring_mbar[2] = 900; d.release_spring_mbar[3] = 600;
     d.p_full_scale_mbar = 16000;     // ~16 bar line at 100% command (bench-measure the real curve)
 
     d.tps_closed_v    = 0.50f;

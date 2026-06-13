@@ -810,10 +810,11 @@ void ShiftScheduler::applyShiftMPC() {
     if (_sclass == SC_COAST_UP || _sclass == SC_COAST_DOWN) {
         mpc = cruise;                                   // coast: no boost authority needed
     } else if (engineProfile.clPressureEnable()) {
-        // Physical model: line must at least support the apply clutch carrying input torque
-        // through the overlap (a torque-correct lower bound, vs the flat load-% heuristic).
+        // Physical model (Phase 3d): line holds the OFF-GOING clutch at its torque through the
+        // overlap (release coefficient + off-going spring) — a clean crossover, vs the flat
+        // load-% heuristic. Gear-pair idx selects the off-going element for this shift direction.
         uint8_t idx = constrain(_is_upshift ? (_from_gear - 1) : (telemetry.target_gear - 1), 0, 3);
-        float mbar = engineProfile.clutchApplyMbar(idx, _input_at_start, telemetry.atf_temp_c);
+        float mbar = engineProfile.clutchReleaseMbar(idx, _input_at_start);
         mpc = fmaxf(cruise, (float)engineProfile.mbarToPct(mbar));
     } else {
         float base = (_is_upshift ? 40.0f : 50.0f) + 0.5f * _load_at_start;

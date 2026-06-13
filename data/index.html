@@ -229,6 +229,10 @@
             <label class="ep-field">Conv. coupling SR (×100) <input type="number" min="50" max="100" id="ep-tcCoupSr"></label>
             <label class="ep-field">Pressure model (torque→P) <input type="checkbox" id="ep-clPwr" style="width:auto;transform:scale(1.3);margin-left:6px;"></label>
             <label class="ep-field">Line @100% (mBar) <input type="number" min="4000" max="25000" id="ep-pFull"></label>
+            <label class="ep-field">Coef apply cold <input type="number" min="50" max="255" id="ep-coefCold"></label>
+            <label class="ep-field">Coef apply hot <input type="number" min="50" max="255" id="ep-coefHot"></label>
+            <label class="ep-field">Coef releasing <input type="number" min="50" max="255" id="ep-coefRel"></label>
+            <label class="ep-field">Coef stationary <input type="number" min="50" max="255" id="ep-coefStat"></label>
             <label class="ep-field">T_max ref (Nm) <input type="number" id="ep-tmax"></label>
             <label class="ep-field">TPS closed (V) <input type="number" step="0.01" id="ep-tpsC"></label>
             <label class="ep-field">TPS WOT (V) <input type="number" step="0.01" id="ep-tpsW"></label>
@@ -237,7 +241,7 @@
         </div>
         <div style="margin-top:0.8rem; font-size:0.7rem; color:var(--slate-400); font-weight:700;">Baseline upshift fill (per shift)</div>
         <div id="ep-fill" style="display:grid; grid-template-columns:repeat(4,1fr); gap:0.6rem; margin-top:0.4rem;"></div>
-        <div style="margin-top:0.8rem; font-size:0.7rem; color:var(--slate-400); font-weight:700;">Clutch pressure model — capacity (mBar/Nm ×100) + return spring (mBar), per shift</div>
+        <div style="margin-top:0.8rem; font-size:0.7rem; color:var(--slate-400); font-weight:700;">Clutch pressure model — friction numerator + return spring (mBar), oncoming &amp; off-going, per shift</div>
         <div id="ep-clutch" style="display:grid; grid-template-columns:repeat(4,1fr); gap:0.6rem; margin-top:0.4rem;"></div>
     </main>
 
@@ -403,8 +407,10 @@
             wrap.innerHTML = '';
             for(let i=0;i<4;i++){
                 wrap.innerHTML += `<div class="ep-field">${SHIFT_LABELS[i]}
-                    <input type="number" id="ep-clutchK-${i}" placeholder="k×100">
-                    <input type="number" id="ep-relSpring-${i}" placeholder="spring mBar"></div>`;
+                    <input type="number" id="ep-applyFric-${i}" placeholder="on friction">
+                    <input type="number" id="ep-applySpring-${i}" placeholder="on spring">
+                    <input type="number" id="ep-relFric-${i}" placeholder="off friction">
+                    <input type="number" id="ep-relSpring-${i}" placeholder="off spring"></div>`;
             }
         }
 
@@ -430,6 +436,10 @@
             document.getElementById('ep-tcCoupSr').value = p.tcCoupSr;
             document.getElementById('ep-clPwr').checked  = !!p.clPwr;
             document.getElementById('ep-pFull').value    = p.pFull;
+            document.getElementById('ep-coefCold').value = p.coefCold;
+            document.getElementById('ep-coefHot').value  = p.coefHot;
+            document.getElementById('ep-coefRel').value  = p.coefRel;
+            document.getElementById('ep-coefStat').value = p.coefStat;
             document.getElementById('ep-tmax').value    = p.tmax;
             document.getElementById('ep-tpsC').value    = p.tpsC;
             document.getElementById('ep-tpsW').value    = p.tpsW;
@@ -442,19 +452,23 @@
             }
             buildClutchFields();
             for(let i=0;i<4;i++){
-                document.getElementById(`ep-clutchK-${i}`).value  = (p.clutchK ? p.clutchK[i] : '');
-                document.getElementById(`ep-relSpring-${i}`).value = (p.relSpring ? p.relSpring[i] : '');
+                document.getElementById(`ep-applyFric-${i}`).value   = (p.applyFric ? p.applyFric[i] : '');
+                document.getElementById(`ep-applySpring-${i}`).value = (p.applySpring ? p.applySpring[i] : '');
+                document.getElementById(`ep-relFric-${i}`).value     = (p.relFric ? p.relFric[i] : '');
+                document.getElementById(`ep-relSpring-${i}`).value   = (p.relSpring ? p.relSpring[i] : '');
             }
         }
 
         function flashProfile(){
             if(!profile) return;
             const torque = tqInputs.map(x => parseInt(x.value)||0);
-            const fillp = [], fillt = [], clutchK = [], relSpring = [];
+            const fillp = [], fillt = [], applyFric = [], applySpring = [], relFric = [], relSpring = [];
             for(let i=0;i<4;i++){
                 fillp.push(parseInt(document.getElementById(`ep-fillp-${i}`).value)||0);
                 fillt.push(parseInt(document.getElementById(`ep-fillt-${i}`).value)||0);
-                clutchK.push(parseInt(document.getElementById(`ep-clutchK-${i}`).value)||2500);
+                applyFric.push(parseInt(document.getElementById(`ep-applyFric-${i}`).value)||4000);
+                applySpring.push(parseInt(document.getElementById(`ep-applySpring-${i}`).value)||600);
+                relFric.push(parseInt(document.getElementById(`ep-relFric-${i}`).value)||4000);
                 relSpring.push(parseInt(document.getElementById(`ep-relSpring-${i}`).value)||600);
             }
             ws.send(JSON.stringify({ cmd:"set_profile", torque,
@@ -474,7 +488,11 @@
                 mapV: parseFloat(document.getElementById('ep-mapV').value)||86,
                 clPwr: document.getElementById('ep-clPwr').checked ? 1 : 0,
                 pFull: parseInt(document.getElementById('ep-pFull').value)||16000,
-                fillp, fillt, clutchK, relSpring }));
+                coefStat: parseInt(document.getElementById('ep-coefStat').value)||100,
+                coefRel:  parseInt(document.getElementById('ep-coefRel').value)||120,
+                coefCold: parseInt(document.getElementById('ep-coefCold').value)||185,
+                coefHot:  parseInt(document.getElementById('ep-coefHot').value)||140,
+                fillp, fillt, applyFric, applySpring, relFric, relSpring }));
             const btn = event.target;
             btn.innerText = "Flashed!"; btn.style.background = "var(--emerald)";
             setTimeout(()=>{ btn.innerText="Flash to Hardware"; btn.style.background="var(--cyan)"; }, 2000);
