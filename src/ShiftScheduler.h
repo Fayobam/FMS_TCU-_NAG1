@@ -108,6 +108,7 @@ class ShiftScheduler {
     void calculateLinePressure();             // CRUISING line pressure (holding map + ATF)
     float cruiseLinePressure();               // the cruise MPC value, for max(cruise, …) during shifts
     void calculateLiveRatio();
+    void computeClutchSpeeds();   // UN52 clutch-speed model: on/off-clutch slip from N2/N3/out
     void updateTCC(bool ptick);
     void checkSafetyShifts();
     void checkCoastDownSchedule();            // auto downshifts while coasting to a stop

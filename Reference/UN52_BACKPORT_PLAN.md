@@ -93,7 +93,13 @@ Each phase compiles clean and is independently shippable + bench-testable. Risk 
 number; **gate every pressure-model phase behind a feature flag** so we can fall back to the
 current heuristic path on the bench instantly.
 
-### Phase 1 — Clutch-speed model (foundation) — LOW risk, HIGH value
+### Phase 0 — Runtime transmission variant — ✅ DONE (V17)
+Small/big NAG ratios + tooth-blend K are a web-selectable `TRANS_SPECS[]` preset (`g_trans`,
+`EngineProfile.trans_variant`, NVS). The clutch-speed model and all ratio math read `g_trans`, so
+big NAG is a dropdown change, not a code change. (Prefill seeds per variant noted in `TRANS_SPECS`;
+fill_t stays user/adapt-owned.)
+
+### Phase 1 — Clutch-speed model (foundation) — 1a ✅ DONE (V17), 1b PENDING BENCH
 - New `ClutchSpeeds.{h,cpp}` (or fold into `SpeedReader`): `computeClutchSpeeds(n2,n3,out,turbine,
   from,to)` → `{on_clutch_rpm, off_clutch_rpm}` using the §2.1 equations + our ratio constants.
 - Add `on_clutch_rpm` / `off_clutch_rpm` to telemetry + the Shift CSV (they're the best tuning trace).

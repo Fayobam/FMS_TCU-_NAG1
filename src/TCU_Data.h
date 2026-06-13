@@ -46,30 +46,41 @@ const uint8_t PIN_SHIFT_C = 17;
 const uint8_t PIN_SHIFT_D = 5;
 
 // ============================================================================
-// 2. TRANSMISSION CONSTANTS
+// 2. TRANSMISSION VARIANT (small NAG / big NAG) — RUNTIME, web-selectable
 // ============================================================================
-// Select the correct set for your gearbox variant. N2_N3_BLEND_K is NOT shared — it is
-// tooth-derived and differs per variant (1.641 small NAG / 1.630 large NAG; see below).
-// Only the ratio constants and prefill defaults change in this block.
-//
-// W5A330  Small NAG  (330 Nm rated) — C-class 4-cyl/6-cyl, THIS BUILD (W203 C230K)
-const float RATIO_1ST = 3.932f;
-const float RATIO_2ND = 2.408f;
-const float RATIO_3RD = 1.486f;
-const float RATIO_4TH = 1.000f;
-const float RATIO_5TH = 0.830f;
-const float RATIO_REV = 3.100f;
-//
-// W5A580  Big NAG    (580 Nm rated) — C/E/S-class V6/V8 AMG, swap these in if using Big NAG
-// const float RATIO_1ST = 3.595f;
-// const float RATIO_2ND = 2.186f;
-// const float RATIO_3RD = 1.405f;
-// const float RATIO_4TH = 1.000f;
-// const float RATIO_5TH = 0.831f;
-// const float RATIO_REV = 3.168f;
-// NOTE: Big NAG also needs larger prefill timing defaults (K2: ~220ms vs 160ms)
-//       due to larger clutch pack volumes — increase prefill_modifiers[2] in
-//       AdaptiveMemory::loadUltimateNag52Defaults() if swapping to Big NAG.
+// The two 722.6 variants differ ONLY in gear ratios and the tooth-derived turbine
+// blend K. Both are presets in TRANS_SPECS[]; the active one (g_trans) is selected at
+// boot from EngineProfile.trans_variant (NVS) and switched live from the dashboard —
+// no recompile/reflash to move between boxes. Everything downstream (getTargetRatio,
+// turbine kinematics, clutch-speed model, money-shift) reads g_trans, so adding the big
+// box is a data change, not a code change.
+enum TransVariant : uint8_t { NAG_SMALL = 0, NAG_BIG = 1, TRANS_VARIANT_COUNT };
+
+struct TransSpec {
+    float    ratio[6];   // [0..4] = gears 1-5, [5] = reverse
+    float    blend_k;    // N2/N3 turbine blend = 1 + Zsun/Zring (tooth-derived; see §K note)
+    uint16_t fill_t_seed[4];  // recommended baseline fill ms (1-2,2-3,3-4,4-5) — bigger packs = longer
+    const char* name;
+};
+
+// W5A330 Small NAG (330 Nm) — C-class 4/6-cyl, THIS BUILD (W203 C230K).
+// W5A580 Big NAG  (580 Nm) — C/E/S V6/V8 AMG; larger clutch packs ⇒ longer prefill seeds.
+const TransSpec TRANS_SPECS[TRANS_VARIANT_COUNT] = {
+    { {3.932f, 2.408f, 1.486f, 1.000f, 0.830f, 3.100f}, 1.6410f, {140, 150, 180, 130}, "W5A330 Small NAG" },
+    { {3.595f, 2.186f, 1.405f, 1.000f, 0.831f, 3.168f}, 1.6304f, {170, 220, 240, 160}, "W5A580 Big NAG"  },
+};
+
+// Active variant geometry (defined in EngineProfile.cpp; set by EngineProfile at boot
+// and whenever trans_variant changes). Read everywhere a ratio or K is needed.
+extern TransSpec g_trans;
+
+// Back-compat names so existing call sites read the LIVE variant (not a fixed constant).
+#define RATIO_1ST (g_trans.ratio[0])
+#define RATIO_2ND (g_trans.ratio[1])
+#define RATIO_3RD (g_trans.ratio[2])
+#define RATIO_4TH (g_trans.ratio[3])
+#define RATIO_5TH (g_trans.ratio[4])
+#define RATIO_REV (g_trans.ratio[5])
 
 // ============================================================================
 // 3. SAFETY THRESHOLDS (M111.985 + TVS1320, 6500 rpm ceiling)
@@ -136,12 +147,13 @@ const float SPRAG_FLAT_RATIO_DELTA = 0.004f;
 // N2/N3 turbine speed blending constant — DERIVED FROM TOOTH COUNTS (ATSG p.8, pp.32-33).
 // Front simple planetary: n2 = front carrier, n3 = front sun, turbine = front ring.
 //   n_turbine = n2*(1 + Zs/Zr) - n3*(Zs/Zr)   so K = 1 + Zs/Zr,  (K-1) = Zs/Zr
-//   Small NAG (W5A330): sun 50T, ring 78T → K = 1 + 50/78 = 1.6410  (THIS BUILD)
+//   Small NAG (W5A330): sun 50T, ring 78T → K = 1 + 50/78 = 1.6410
 //   Large NAG (W5A580): sun 58T, ring 92T → K = 1 + 58/92 = 1.6304
 // turbine = (N2 * K) - (N3 * (K-1))
-// Verify: N3=0 (gears 1&5) → N2*1.641;  N2=N3 (3rd gear direct) → N2*1.0 ✓
+// Verify: N3=0 (gears 1&5) → N2*K;  N2=N3 (3rd gear direct) → N2*1.0 ✓
 // Bench-verify TCC-locked: turbine should equal engine RPM ±20.
-const float N2_N3_BLEND_K = 1.641f;
+// K is per-variant (see TRANS_SPECS above) — read the LIVE value via g_trans.blend_k.
+#define N2_N3_BLEND_K (g_trans.blend_k)
 
 // ============================================================================
 // TORQUE ESTIMATION — the master input (ATSG p.77: adaptation is denominated in Nm,
@@ -205,6 +217,10 @@ struct TCU_Telemetry {
     float output_rpm  = 0.0f;
     float engine_rpm  = 0.0f;
     float live_ratio  = 0.0f;
+    float n2_rpm = 0.0f;            // raw N2 (front carrier) — for the clutch-speed model
+    float n3_rpm = 0.0f;            // raw N3 (front sun)
+    float on_clutch_rpm = 0.0f;     // on-coming clutch slip during a shift (UN52 clutch-speed model)
+    float off_clutch_rpm = 0.0f;    // off-going clutch slip during a shift (0 when not shifting)
     uint32_t speed_sample_seq = 0;   // ++ when a NEW edge advances a ratio channel (N2/N3/OUT);
                                      // lets the 1 kHz phase engine gate ratio-derivative checks (B-4)
 
@@ -297,6 +313,8 @@ struct TraceSample {
     uint16_t turb;          // turbine rpm
     uint16_t out;           // output rpm
     int16_t  cl_err_x1000;  // closed-loop schedule error × 1000 (INERTIA; 0 elsewhere)
+    int16_t  on_clutch;     // on-coming clutch slip rpm (clutch-speed model)
+    int16_t  off_clutch;    // off-going clutch slip rpm
 };
 
 struct ShiftTrace {

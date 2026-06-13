@@ -213,6 +213,12 @@
             <div class="tuner-grid" id="torque-grid" style="grid-template-columns: 90px repeat(8, 64px);"></div>
         </div>
         <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:0.6rem;">
+            <label class="ep-field">Transmission
+                <select id="ep-transVariant" style="width:auto;margin-left:6px;">
+                    <option value="0">W5A330 Small NAG</option>
+                    <option value="1">W5A580 Big NAG</option>
+                </select>
+            </label>
             <label class="ep-field">Overrev RPM <input type="number" id="ep-overrev"></label>
             <label class="ep-field">Lug RPM <input type="number" id="ep-lug"></label>
             <label class="ep-field">Engine PPR (pulses/rev) <input type="number" min="1" max="240" id="ep-engPpr"></label>
@@ -404,6 +410,7 @@
             document.getElementById('ep-outPpr').value  = p.outPpr;
             document.getElementById('ep-clEn').checked  = !!p.clEn;
             document.getElementById('ep-clKp').value    = p.clKp;
+            document.getElementById('ep-transVariant').value = (p.transVariant ?? 0);
             document.getElementById('ep-tmax').value    = p.tmax;
             document.getElementById('ep-tpsC').value    = p.tpsC;
             document.getElementById('ep-tpsW').value    = p.tpsW;
@@ -431,6 +438,7 @@
                 outPpr:  parseInt(document.getElementById('ep-outPpr').value)||24,
                 clEn:    document.getElementById('ep-clEn').checked ? 1 : 0,
                 clKp:    parseInt(document.getElementById('ep-clKp').value)||0,
+                transVariant: parseInt(document.getElementById('ep-transVariant').value)||0,
                 tmax:    parseInt(document.getElementById('ep-tmax').value)||450,
                 tpsC: parseFloat(document.getElementById('ep-tpsC').value)||0.5,
                 tpsW: parseFloat(document.getElementById('ep-tpsW').value)||2.9,
@@ -462,11 +470,13 @@
         function downloadTraceCSV() {
             if (!lastTrace) return;
             const d = lastTrace;
-            let csv = 't_ms,phase,spc,mpc,ratio,eng,turb,out,cl_err,flags\n';
+            let csv = 't_ms,phase,spc,mpc,ratio,eng,turb,out,cl_err,on_clutch,off_clutch,flags\n';
             for (let i = 0; i < d.n; i++) {
                 csv += [d.t[i], PHASE_NAMES[d.ph[i]] || d.ph[i], d.spc[i], d.mpc[i],
                         (d.ratio[i]/1000).toFixed(3), d.eng[i], d.turb[i], d.out[i],
-                        (d.clErr[i]/1000).toFixed(3), d.fl[i]].join(',') + '\n';
+                        (d.clErr[i]/1000).toFixed(3),
+                        (d.onClutch ? d.onClutch[i] : ''), (d.offClutch ? d.offClutch[i] : ''),
+                        d.fl[i]].join(',') + '\n';
             }
             const cls = (TRACE_CLASS[d.cls] || 'shift');
             const blob = new Blob([csv], { type: 'text/csv' });

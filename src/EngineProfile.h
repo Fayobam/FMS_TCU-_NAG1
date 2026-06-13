@@ -18,10 +18,11 @@
 #pragma once
 #include <Arduino.h>
 #include <Preferences.h>
+#include "TCU_Data.h"   // TransVariant / TransSpec / g_trans
 
 #define EP_RPM_BINS 8
 #define EP_MAP_BINS 8
-#define EP_MAGIC    0x4E414734u   // 'NAG4' — bump if the struct layout changes (v4: + closed-loop SPC)
+#define EP_MAGIC    0x4E414735u   // 'NAG5' — bump if the struct layout changes (v5: + trans_variant)
 
 struct EngineProfileData {
     int16_t  torque[EP_RPM_BINS][EP_MAP_BINS];  // Nm on the RPM×MAP grid
@@ -38,6 +39,7 @@ struct EngineProfileData {
     uint16_t fill_t[4];                         // baseline upshift fill time ms
     uint8_t  cl_spc_enable;                     // closed-loop SPC in upshift INERTIA (0/1)
     uint16_t cl_spc_kp;                         // P gain: SPC%-trim per unit ratio-schedule error
+    uint8_t  trans_variant;                     // TransVariant: 0=small NAG (W5A330), 1=big NAG (W5A580)
     uint32_t magic;                             // sanity/version tag
 };
 
@@ -50,6 +52,8 @@ class EngineProfile {
   public:
     void begin();
     void save();
+    void applyTransVariant();   // load TRANS_SPECS[trans_variant] into g_trans (call after any change)
+    uint8_t transVariant() const { return d.trans_variant; }
 
     float   estimateTorque(float rpm, float map_kpa);  // bilinear Nm
     float   loadPct(float rpm, float map_kpa);         // 0..100% of t_max_ref

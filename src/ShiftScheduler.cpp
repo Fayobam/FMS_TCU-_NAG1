@@ -99,6 +99,55 @@ void ShiftScheduler::calculateLiveRatio() {
 }
 
 // ----------------------------------------------------------------------------
+// CLUTCH-SPEED MODEL (ported from rnd-ash/ultimate-nag52 models/clutch_speed.cpp).
+// Closed-form on-coming / off-going clutch SLIP speeds for the active gear change,
+// from the raw shaft speeds we already measure (N2, N3, output) and the live gearbox
+// ratios (g_trans — variant-correct for small AND big NAG). These are the signals EGS
+// uses for phase transitions: off-clutch slip rising = fill done / off-going releasing;
+// on-clutch slip → 0 = synced. Far less noisy than gross turbine/output ratio.
+//
+// PHASE 1 (now): compute + expose in telemetry/CSV for bench verification against the
+// ratio-based behaviour. Wiring these into the phase transitions is the next step,
+// once a signal-gen bench run confirms the values + signs per shift.
+// ----------------------------------------------------------------------------
+void ShiftScheduler::computeClutchSpeeds() {
+    // Only meaningful mid-shift; clear when cruising so the dashboard reads 0.
+    if (_current_phase == PHASE_CRUISING) {
+        telemetry.on_clutch_rpm = 0.0f;
+        telemetry.off_clutch_rpm = 0.0f;
+        return;
+    }
+    float n2 = telemetry.n2_rpm, n3 = telemetry.n3_rpm, out = telemetry.output_rpm;
+    float r2 = RATIO_2ND, r3 = RATIO_3RD, r4 = RATIO_4TH;
+    uint8_t f = _from_gear, t = telemetry.target_gear;
+    float on = 0.0f, off = 0.0f;
+
+    if ((f == 1 && t == 2) || (t == 1 && f == 2) ||
+        (f == 4 && t == 5) || (t == 4 && f == 5)) {
+        // K1/K2 (1-2,5-4) vs B1 (2-1,4-5) — element on the simple front planetary
+        float vk1 = n2 - n3;       // K1 (1-2) / K2 (5-4)
+        float vb1 = n3;            // B1
+        bool on_is_k = (f == 1 && t == 2) || (f == 5 && t == 4);
+        on  = on_is_k ? vk1 : vb1;
+        off = on_is_k ? vb1 : vk1;
+    } else if ((f == 2 && t == 3) || (f == 3 && t == 2)) {
+        float vk2 = n3 - (r3 * out);
+        float vk3 = (r2 - r3 != 0.0f) ? (r3 * (r2 * out - n3)) / (r2 - r3) : 0.0f;
+        bool up = (f == 2 && t == 3);
+        on  = up ? vk2 : vk3;
+        off = up ? vk3 : vk2;
+    } else if ((f == 3 && t == 4) || (f == 4 && t == 3)) {
+        float vb2 = (r3 - r4 != 0.0f) ? (r3 * out - n3) / (r3 - r4) : 0.0f;
+        float vk3 = n3 - vb2;
+        bool up = (f == 3 && t == 4);
+        on  = up ? vk3 : vb2;
+        off = up ? vb2 : vk3;
+    }
+    telemetry.on_clutch_rpm  = on;
+    telemetry.off_clutch_rpm = off;
+}
+
+// ----------------------------------------------------------------------------
 // TCC DYNAMIC SLIP CONTROLLER
 // Rate-limited and 20ms-quantized (ATSG p.80): lockup moves at most TCC_LOCK_STEP
 // %/tick (gentle apply) and opens at TCC_RELEASE_STEP %/tick (fast). TCC is forced
@@ -239,6 +288,8 @@ void ShiftScheduler::captureTrace() {
     s.turb  = (uint16_t)constrain((int)telemetry.turbine_rpm, 0, 65535);
     s.out   = (uint16_t)constrain((int)telemetry.output_rpm,  0, 65535);
     s.cl_err_x1000 = (int16_t)constrain((int)(_cl_err * 1000.0f), -32768, 32767);
+    s.on_clutch  = (int16_t)constrain((int)telemetry.on_clutch_rpm,  -32768, 32767);
+    s.off_clutch = (int16_t)constrain((int)telemetry.off_clutch_rpm, -32768, 32767);
     shiftTrace.count = shiftTrace.count + 1;
 }
 
@@ -609,6 +660,7 @@ void ShiftScheduler::update() {
     checkTpsROC();
     telemetry.shift_phase = (uint8_t)_current_phase;
     calculateLiveRatio();
+    computeClutchSpeeds();   // on/off-clutch slip (clutch-speed model; exposed for bench verify)
 
     // Torque estimate is the master input for all pressure/class decisions (ATSG p.77).
     // From the per-engine torque surface (RPM × MAP), so it ports across engines.

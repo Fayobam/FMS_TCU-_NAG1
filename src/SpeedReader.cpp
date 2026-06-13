@@ -184,6 +184,8 @@ void SpeedReader::update() {
 
     float n2 = readChannelRPM(_n2);
     float n3 = readChannelRPM(_n3);
+    telemetry.n2_rpm = n2;
+    telemetry.n3_rpm = n3;
     telemetry.output_rpm  = readChannelRPM(_out);
     telemetry.engine_rpm  = readChannelRPM(_eng);
     telemetry.turbine_rpm = calculateTurbineRPM(n2, n3);

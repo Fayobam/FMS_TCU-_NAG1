@@ -4,15 +4,31 @@
 // ============================================================================
 #include "EngineProfile.h"
 
+// Active transmission geometry (ratios + tooth-blend K). Default to small NAG until
+// EngineProfile::begin() applies the NVS-stored variant. Read everywhere via g_trans.
+TransSpec g_trans = TRANS_SPECS[NAG_SMALL];
+
+void EngineProfile::applyTransVariant() {
+    uint8_t v = (d.trans_variant < TRANS_VARIANT_COUNT) ? d.trans_variant : NAG_SMALL;
+    g_trans = TRANS_SPECS[v];
+    Serial.printf("Transmission variant: %s (K=%.4f, 1st=%.3f)\n",
+                  g_trans.name, g_trans.blend_k, g_trans.ratio[0]);
+}
+
 void EngineProfile::begin() {
     prefs.begin("engine_prof", false);
     if (prefs.getBytesLength("data") == sizeof(d)) {
         prefs.getBytes("data", &d, sizeof(d));
-        if (d.magic == EP_MAGIC) { Serial.println("Engine profile loaded from flash."); return; }
+        if (d.magic == EP_MAGIC) {
+            Serial.println("Engine profile loaded from flash.");
+            applyTransVariant();
+            return;
+        }
     }
     Serial.println("Engine profile: blank/!match — seeding M111+TVS1320 defaults.");
     seedDefaults();
     save();
+    applyTransVariant();
 }
 
 void EngineProfile::save() {
@@ -45,6 +61,7 @@ void EngineProfile::seedDefaults() {
     d.out_ppr         = 24;     // current custom output-shaft wheel; 48-60 recommended
     d.cl_spc_enable   = 1;      // closed-loop SPC in upshift INERTIA (feedforward + P trim)
     d.cl_spc_kp       = 80;     // SPC%-trim per unit ratio error (bench-tune; 0 = pure open-loop)
+    d.trans_variant   = NAG_SMALL;   // W5A330 this build; switch to NAG_BIG on the dashboard
 
     d.tps_closed_v    = 0.50f;
     d.tps_wot_v       = 2.90f;

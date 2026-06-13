@@ -66,6 +66,7 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         resp["tmax"] = p->t_max_ref; resp["overrev"] = p->overrev_rpm; resp["lug"] = p->lug_rpm;
         resp["engPpr"] = p->eng_ppr; resp["outPpr"] = p->out_ppr;
         resp["clEn"]   = p->cl_spc_enable; resp["clKp"] = p->cl_spc_kp;
+        resp["transVariant"] = p->trans_variant;   // 0=small NAG, 1=big NAG
         resp["tpsC"] = p->tps_closed_v; resp["tpsW"] = p->tps_wot_v;
         resp["map0"] = p->map_kpa_at_0v; resp["mapV"] = p->map_kpa_per_volt;
         JsonArray fp = resp["fillp"].to<JsonArray>();
@@ -91,6 +92,8 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         if (doc["outPpr"].is<int>())  p->out_ppr     = (uint16_t)constrain(doc["outPpr"].as<int>(), 1, 240);
         if (doc["clEn"].is<int>())    p->cl_spc_enable = (uint8_t)(doc["clEn"].as<int>() ? 1 : 0);
         if (doc["clKp"].is<int>())    p->cl_spc_kp   = (uint16_t)constrain(doc["clKp"].as<int>(), 0, 1000);
+        // Transmission variant: ratios + tooth-blend K switch live (g_trans) — no reboot.
+        if (doc["transVariant"].is<int>()) p->trans_variant = (uint8_t)constrain(doc["transVariant"].as<int>(), 0, (int)TRANS_VARIANT_COUNT - 1);
         if (doc["tmax"].is<int>())    p->t_max_ref   = (uint16_t)constrain(doc["tmax"].as<int>(), 100, 1200);
         if (doc["tpsC"].is<float>())  p->tps_closed_v = doc["tpsC"].as<float>();
         if (doc["tpsW"].is<float>())  p->tps_wot_v    = doc["tpsW"].as<float>();
@@ -104,6 +107,7 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
                 p->fill_t[i] = (uint16_t)constrain(ft[i].as<int>(), 0, 400);
             }
         engineProfile.save();
+        engineProfile.applyTransVariant();   // push ratio/K change into g_trans live
         Serial.println("Engine profile updated via Web!");
         return;
     }
@@ -191,11 +195,13 @@ void WebManager::sendShiftTrace() {
     JsonArray ratio = doc["ratio"].to<JsonArray>(), eng = doc["eng"].to<JsonArray>();
     JsonArray turb = doc["turb"].to<JsonArray>(), out = doc["out"].to<JsonArray>();
     JsonArray cle = doc["clErr"].to<JsonArray>(), fl = doc["fl"].to<JsonArray>();
+    JsonArray onc = doc["onClutch"].to<JsonArray>(), offc = doc["offClutch"].to<JsonArray>();
     for (uint16_t i = 0; i < n; i++) {
         TraceSample &s = shiftTrace.s[i];
         t.add(s.t_ms); ph.add(s.phase); spc.add(s.spc); mpc.add(s.mpc);
         ratio.add(s.ratio_x1000); eng.add(s.eng); turb.add(s.turb); out.add(s.out);
         cle.add(s.cl_err_x1000); fl.add(s.flags);
+        onc.add(s.on_clutch); offc.add(s.off_clutch);
     }
     String buf;
     serializeJson(doc, buf);
@@ -241,6 +247,8 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["loadPct"]   = telemetry.load_pct;
     doc["shiftClass"]= telemetry.shift_class;   // 0=POWER_UP 1=COAST_UP 2=POWER_DOWN 3=COAST_DOWN
     doc["pdType"]    = telemetry.pd_type;       // 0=NONE 1=SPRAG 2=TIMED
+    doc["onClutch"]  = (int)telemetry.on_clutch_rpm;   // clutch-speed model (0 unless shifting)
+    doc["offClutch"] = (int)telemetry.off_clutch_rpm;
 
     char buffer[1024];
     size_t len = serializeJson(doc, buffer, sizeof(buffer));
