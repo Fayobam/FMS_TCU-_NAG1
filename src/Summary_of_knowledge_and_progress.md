@@ -292,6 +292,16 @@ panel shows a **Shift Class** badge (incl. PD_SPRAG/PD_TIMED) and a **Load / Tor
    target with SPC still ~10%); then enable 4→3/5→4 timed; full kickdown last.
 6. Log every shift (class, bins, per-phase durations, SPC/MPC, flare/harsh) at 100 Hz.
 
+### Future architecture work — Ultimate-NAG52 backports
+A study of rnd-ash's `ultimate-nag52-fw` (C++ engine, CAN/diag excluded) and a phased backport
+plan live in **`Reference/UN52_BACKPORT_PLAN.md`**. Headline candidates, value-per-effort order:
+(1) **clutch-speed model** — on/off-clutch slip from N2/N3/output for robust phase transitions
+(cheap, our sensors already cover it); (2) **physical pressure-from-torque clutch model**
+(`P = trq·k/coef + spring`) replacing the % heuristics; (3) **MOD computed to hold the off-going
+clutch** during overlap; (4) clutch-speed-driven split adaptation; (5) ramped/phase-aligned
+torque-cut; (6) converter input-torque factor. Their **speed sensing is inferior to ours** (PCNT
+counting; engine RPM via CAN only) — not a backport target.
+
 ---
 
 ## 15. Change Log
