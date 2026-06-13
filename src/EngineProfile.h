@@ -22,7 +22,7 @@
 
 #define EP_RPM_BINS 8
 #define EP_MAP_BINS 8
-#define EP_MAGIC    0x4E414735u   // 'NAG5' — bump if the struct layout changes (v5: + trans_variant)
+#define EP_MAGIC    0x4E414736u   // 'NAG6' — bump if the struct layout changes (v6: + converter model)
 
 struct EngineProfileData {
     int16_t  torque[EP_RPM_BINS][EP_MAP_BINS];  // Nm on the RPM×MAP grid
@@ -40,6 +40,8 @@ struct EngineProfileData {
     uint8_t  cl_spc_enable;                     // closed-loop SPC in upshift INERTIA (0/1)
     uint16_t cl_spc_kp;                         // P gain: SPC%-trim per unit ratio-schedule error
     uint8_t  trans_variant;                     // TransVariant: 0=small NAG (W5A330), 1=big NAG (W5A580)
+    uint16_t tc_stall_mult_x100;                // converter torque multiplication at stall (×100, e.g. 200 = 2.0×)
+    uint16_t tc_coupling_sr_x100;               // speed ratio (turbine/engine ×100) at the coupling point (mult→1.0)
     uint32_t magic;                             // sanity/version tag
 };
 
@@ -55,9 +57,25 @@ class EngineProfile {
     void applyTransVariant();   // load TRANS_SPECS[trans_variant] into g_trans (call after any change)
     uint8_t transVariant() const { return d.trans_variant; }
 
-    float   estimateTorque(float rpm, float map_kpa);  // bilinear Nm
-    float   loadPct(float rpm, float map_kpa);         // 0..100% of t_max_ref
+    float   estimateTorque(float rpm, float map_kpa);  // bilinear ENGINE Nm
+    float   loadPct(float rpm, float map_kpa);         // 0..100% of t_max_ref (engine-torque based)
     uint8_t torqueBin(float rpm, float map_kpa);       // 0..3
+
+    // Converter torque multiplication: the clutches see INPUT (turbine) torque, which a
+    // fluid converter multiplies at low speed ratio (≈2× at stall → 1.0 at the coupling
+    // point). 1.0 when locked/coupled. Phase 3's pressure model is denominated in input Nm.
+    float   converterFactor(float engine_rpm, float turbine_rpm) const {
+        if (engine_rpm < 1.0f) return 1.0f;
+        float sr = turbine_rpm / engine_rpm;                         // speed ratio 0..~1
+        float stall = (d.tc_stall_mult_x100 ? d.tc_stall_mult_x100 : 200) / 100.0f;
+        float coupling = (d.tc_coupling_sr_x100 ? d.tc_coupling_sr_x100 : 85) / 100.0f;
+        if (sr >= coupling) return 1.0f;
+        float f = stall + (1.0f - stall) * (sr / coupling);         // stall@sr=0 → 1.0@coupling
+        return constrain(f, 1.0f, stall);
+    }
+    float   inputTorque(float engine_rpm, float turbine_rpm, float map_kpa) {
+        return estimateTorque(engine_rpm, map_kpa) * converterFactor(engine_rpm, turbine_rpm);
+    }
 
     uint16_t overrevRpm() const { return d.overrev_rpm; }
     uint16_t lugRpm()     const { return d.lug_rpm; }

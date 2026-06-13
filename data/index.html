@@ -225,6 +225,8 @@
             <label class="ep-field">Output PPR (pulses/rev) <input type="number" min="1" max="240" id="ep-outPpr"></label>
             <label class="ep-field">Closed-loop SPC <input type="checkbox" id="ep-clEn" style="width:auto;transform:scale(1.3);margin-left:6px;"></label>
             <label class="ep-field">CL gain Kp (%/ratio) <input type="number" min="0" max="1000" id="ep-clKp"></label>
+            <label class="ep-field">Conv. stall mult (×100) <input type="number" min="100" max="350" id="ep-tcStall"></label>
+            <label class="ep-field">Conv. coupling SR (×100) <input type="number" min="50" max="100" id="ep-tcCoupSr"></label>
             <label class="ep-field">T_max ref (Nm) <input type="number" id="ep-tmax"></label>
             <label class="ep-field">TPS closed (V) <input type="number" step="0.01" id="ep-tpsC"></label>
             <label class="ep-field">TPS WOT (V) <input type="number" step="0.01" id="ep-tpsW"></label>
@@ -411,6 +413,8 @@
             document.getElementById('ep-clEn').checked  = !!p.clEn;
             document.getElementById('ep-clKp').value    = p.clKp;
             document.getElementById('ep-transVariant').value = (p.transVariant ?? 0);
+            document.getElementById('ep-tcStall').value  = p.tcStall;
+            document.getElementById('ep-tcCoupSr').value = p.tcCoupSr;
             document.getElementById('ep-tmax').value    = p.tmax;
             document.getElementById('ep-tpsC').value    = p.tpsC;
             document.getElementById('ep-tpsW').value    = p.tpsW;
@@ -439,6 +443,8 @@
                 clEn:    document.getElementById('ep-clEn').checked ? 1 : 0,
                 clKp:    parseInt(document.getElementById('ep-clKp').value)||0,
                 transVariant: parseInt(document.getElementById('ep-transVariant').value)||0,
+                tcStall:  parseInt(document.getElementById('ep-tcStall').value)||200,
+                tcCoupSr: parseInt(document.getElementById('ep-tcCoupSr').value)||85,
                 tmax:    parseInt(document.getElementById('ep-tmax').value)||450,
                 tpsC: parseFloat(document.getElementById('ep-tpsC').value)||0.5,
                 tpsW: parseFloat(document.getElementById('ep-tpsW').value)||2.9,
@@ -577,8 +583,10 @@
                 cv.style.color = (data.shiftClass === 0 || data.shiftClass === 2) ? 'var(--orange)' : 'var(--slate-300)';
 
                 // Load % (drives the pressure maps) with the underlying torque estimate
+                // load% / engine Nm → input(turbine) Nm (converter multiplication at low speed ratio)
                 document.getElementById('load-val').innerText =
-                    Math.round(data.loadPct) + '% / ' + Math.round(data.tEstNm) + ' Nm';
+                    Math.round(data.loadPct) + '% / ' + Math.round(data.tEstNm) +
+                    '→' + Math.round(data.tInput ?? data.tEstNm) + ' Nm';
 
                 // Update Shift Metrics
                 document.getElementById('shift-time-val').innerText = data.shiftTime + ' ms';

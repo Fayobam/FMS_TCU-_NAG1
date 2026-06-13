@@ -285,7 +285,8 @@ struct TCU_Telemetry {
                              //                    5=RELEASE 6=CATCH 7=LOCK 8=END
 
     // --- Shift classification & torque (ATSG class-based architecture) ---
-    float   t_est_nm     = 0.0f;  // estimated input torque (Nm)
+    float   t_est_nm     = 0.0f;  // estimated ENGINE torque (Nm) from the MAP×RPM surface
+    float   t_input_nm   = 0.0f;  // INPUT/turbine torque = engine × converter factor (clutch-relevant)
     float   load_pct     = 0.0f;  // 0-100% of T_MAX (drives all pressure maps)
     uint8_t shift_class  = 0;     // mirrors ShiftClass for the active/last shift
     uint8_t pd_type      = 0;     // mirrors PowerDownType when class is SC_POWER_DOWN

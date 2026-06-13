@@ -109,7 +109,13 @@ fill_t stays user/adapt-owned.)
 - **Validate on bench** (signal-gen the 4 channels): confirm on/off clutch speeds match hand-calc
   for each shift, including sign. *Blocks nothing else; do this first.*
 
-### Phase 2 — Converter input-torque factor — LOW risk, small
+### Phase 2 — Converter input-torque factor — ✅ DONE (V18)
+`EngineProfile.converterFactor(engine,turbine)` = stall mult (≈2.0×) ramped to 1.0 by the coupling
+speed ratio (≈0.85), both web-tunable (`tc_stall_mult`, `tc_coupling_sr`). `t_input_nm = engine ×
+factor` is exposed in telemetry (`tInput`, shown on the Load/Torque readout). **Deliberately not yet
+repurposing `t_est_nm`/`load_pct`/bins** — kept engine-based so the current adaptation mapping isn't
+perturbed before Phase 3 consumes input torque.
+Original note:
 - In `EngineProfile`: add a 2-point converter multiplication curve (factor vs turbine/engine ratio).
 - `t_est` becomes engine torque × factor when TCC is open (≈1.0 locked). Improves the torque value
   feeding load bins, money-shift, and (later) the pressure model — most at launch/low gears.

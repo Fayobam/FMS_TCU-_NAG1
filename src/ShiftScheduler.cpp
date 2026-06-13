@@ -666,6 +666,10 @@ void ShiftScheduler::update() {
     // From the per-engine torque surface (RPM × MAP), so it ports across engines.
     telemetry.t_est_nm = engineProfile.estimateTorque(telemetry.engine_rpm, telemetry.map_kpa);
     telemetry.load_pct = engineProfile.loadPct(telemetry.engine_rpm, telemetry.map_kpa);
+    // Input (turbine) torque = engine × converter multiplication (Phase 2). Exposed for
+    // observability and consumed by the Phase 3 pressure model; load_pct/bins stay
+    // engine-based for now so the current adaptation mapping is not perturbed pre-Phase 3.
+    telemetry.t_input_nm = engineProfile.inputTorque(telemetry.engine_rpm, telemetry.turbine_rpm, telemetry.map_kpa);
 
     // Engine rpm rate (rpm/s, EMA-smoothed over 100ms samples) for predictive overrev.
     if (millis() - _eng_roc_sample_ms >= 100) {

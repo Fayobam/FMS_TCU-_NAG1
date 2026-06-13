@@ -67,6 +67,7 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         resp["engPpr"] = p->eng_ppr; resp["outPpr"] = p->out_ppr;
         resp["clEn"]   = p->cl_spc_enable; resp["clKp"] = p->cl_spc_kp;
         resp["transVariant"] = p->trans_variant;   // 0=small NAG, 1=big NAG
+        resp["tcStall"] = p->tc_stall_mult_x100; resp["tcCoupSr"] = p->tc_coupling_sr_x100;
         resp["tpsC"] = p->tps_closed_v; resp["tpsW"] = p->tps_wot_v;
         resp["map0"] = p->map_kpa_at_0v; resp["mapV"] = p->map_kpa_per_volt;
         JsonArray fp = resp["fillp"].to<JsonArray>();
@@ -94,6 +95,8 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         if (doc["clKp"].is<int>())    p->cl_spc_kp   = (uint16_t)constrain(doc["clKp"].as<int>(), 0, 1000);
         // Transmission variant: ratios + tooth-blend K switch live (g_trans) — no reboot.
         if (doc["transVariant"].is<int>()) p->trans_variant = (uint8_t)constrain(doc["transVariant"].as<int>(), 0, (int)TRANS_VARIANT_COUNT - 1);
+        if (doc["tcStall"].is<int>())   p->tc_stall_mult_x100  = (uint16_t)constrain(doc["tcStall"].as<int>(), 100, 350);
+        if (doc["tcCoupSr"].is<int>())  p->tc_coupling_sr_x100 = (uint16_t)constrain(doc["tcCoupSr"].as<int>(), 50, 100);
         if (doc["tmax"].is<int>())    p->t_max_ref   = (uint16_t)constrain(doc["tmax"].as<int>(), 100, 1200);
         if (doc["tpsC"].is<float>())  p->tps_closed_v = doc["tpsC"].as<float>();
         if (doc["tpsW"].is<float>())  p->tps_wot_v    = doc["tpsW"].as<float>();
@@ -249,6 +252,7 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["pdType"]    = telemetry.pd_type;       // 0=NONE 1=SPRAG 2=TIMED
     doc["onClutch"]  = (int)telemetry.on_clutch_rpm;   // clutch-speed model (0 unless shifting)
     doc["offClutch"] = (int)telemetry.off_clutch_rpm;
+    doc["tInput"]    = (int)telemetry.t_input_nm;      // input/turbine torque (engine × converter factor)
 
     char buffer[1024];
     size_t len = serializeJson(doc, buffer, sizeof(buffer));

@@ -62,6 +62,8 @@ void EngineProfile::seedDefaults() {
     d.cl_spc_enable   = 1;      // closed-loop SPC in upshift INERTIA (feedforward + P trim)
     d.cl_spc_kp       = 80;     // SPC%-trim per unit ratio error (bench-tune; 0 = pure open-loop)
     d.trans_variant   = NAG_SMALL;   // W5A330 this build; switch to NAG_BIG on the dashboard
+    d.tc_stall_mult_x100  = 200;     // ~2.0× torque multiplication at stall (722.6 converter; tune)
+    d.tc_coupling_sr_x100 = 85;      // multiplication → 1.0 by 0.85 speed ratio (coupling point)
 
     d.tps_closed_v    = 0.50f;
     d.tps_wot_v       = 2.90f;
