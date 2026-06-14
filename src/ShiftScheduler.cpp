@@ -72,7 +72,10 @@ uint8_t ShiftScheduler::getRoutingSolenoidForShift(uint8_t from_gear, uint8_t to
 // Cruise (holding) line pressure value — per-gear holding map × ATF compensation.
 // Returned (not set) so the shift engine can take max(cruise, shift-demand).
 float ShiftScheduler::cruiseLinePressure() {
-    uint8_t gear_idx = constrain(telemetry.current_gear - 1, 0, 4);
+    // Reverse (R1/R2) reuses 2nd-gear holding pressure — no separate reverse cal/adapt
+    // (simplicity; R is manual-valve routed and only needs adequate, deterministic line).
+    uint8_t g = (telemetry.prnd_state == 'R') ? 2 : telemetry.current_gear;
+    uint8_t gear_idx = constrain(g - 1, 0, 4);
     uint8_t load_idx = loadToBin(computeLoad(telemetry.tps_pct, telemetry.map_kpa));
     float p = HOLDING_PRESSURE_MAP[gear_idx][load_idx];
     if (telemetry.engine_rpm < 1200.0f) p += 10.0f;
@@ -203,9 +206,19 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     if (_current_phase != PHASE_CRUISING) return false;          // already shifting
     if (target_gear < 1 || target_gear > 5) return false;
 
-    // Money-shift / overrev guard on ANY downshift (manual or auto)
+    // Money-shift / overrev guard on ANY downshift (manual or auto).
+    // Predict the post-downshift turbine speed TWO independent ways and trust the
+    // HIGHER (fail-safe): from the output sensor (output × target ratio) AND from the
+    // turbine sensor, which is output-INDEPENDENT (turbine × ratio_target/ratio_current,
+    // since turbine = output × ratio_current). So a DEAD output sensor reading 0 can no
+    // longer silently defeat the guard — the N2/N3-derived estimate still catches an
+    // over-rev downshift. (Both sensors dead = truly blind; nothing can help then.)
     if (!is_upshift) {
-        float predicted = telemetry.output_rpm * getTargetRatio(target_gear);
+        float ratio_t = getTargetRatio(target_gear);
+        float ratio_c = getTargetRatio(telemetry.current_gear);
+        float pred_out  = telemetry.output_rpm * ratio_t;
+        float pred_turb = (ratio_c > 0.01f) ? telemetry.turbine_rpm * (ratio_t / ratio_c) : 0.0f;
+        float predicted = fmaxf(pred_out, pred_turb);
         if (predicted > RPM_MAX_SAFE_DOWNSHIFT) {
             Serial.print("DOWNSHIFT BLOCKED ("); Serial.print(source);
             Serial.print(") predicted RPM "); Serial.println(predicted);
@@ -724,18 +737,23 @@ void ShiftScheduler::update() {
     if (_current_phase == PHASE_CRUISING) {
         updateStandbyAndGarage();   // SPC/MPC standby duties + Y4 garage window
 
-        // Engagement window: the FALLING EDGE of the P/N switch means the manual
-        // valve is leaving P/N — open the lever window (Y4 pulse + P/N standby
-        // duties + slip-limp grace) regardless of whether it lands in D or R.
-        bool pn_falling_edge = _prev_pn_raw && !telemetry.pn_switch_raw;
-        _prev_pn_raw = telemetry.pn_switch_raw;
+        // Range comes from the 4-bit shifter plate (decodePRND), NOT the multiplexed
+        // pin-39 P/N switch. That pin is shared with the ATF temp sensor and reads
+        // "in P/N" whenever the temp sensor is open/cold (>3.0 V), which would silently
+        // block engagement forever. The plate decodes P/N/R/D directly, so engage off
+        // it alone. (pn_switch_raw is still telemetered for diagnostics.)
+        bool in_park_neutral = (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N');
+
+        // Engagement window: leaving P/N (into D or R) opens the lever window (Y4 pulse
+        // + P/N standby duties + slip-limp grace), regardless of whether it lands in D or R.
+        bool pn_falling_edge = _prev_pn_raw && !in_park_neutral;
+        _prev_pn_raw = in_park_neutral;
         if (pn_falling_edge) {
             _engage_grace_until_ms = millis() + ENGAGE_GRACE_MS;
         }
-        // Drive latch: only once the (debounced) decoder confirms a FORWARD range.
-        // Selecting R no longer latches drive_engaged / asserts gear 2 (it also
-        // enabled TPS-ROC max-line mode in reverse).
-        if (!telemetry.pn_switch_raw && !telemetry.drive_engaged && isForwardRange()) {
+        // Drive latch: once the debounced plate confirms a FORWARD range. Selecting R
+        // does not latch drive_engaged / assert gear 2 (isForwardRange() excludes R).
+        if (!telemetry.drive_engaged && isForwardRange()) {
             telemetry.drive_engaged = true;
             telemetry.current_gear  = 2;     // 722.6 hydraulic default; 1st is paddle-only
             telemetry.target_gear   = 2;
@@ -744,7 +762,7 @@ void ShiftScheduler::update() {
             // "2nd" is a guess — re-classify from the live ratio after clutch sync.
             _gear_resync_pending = (telemetry.output_rpm > OUTPUT_RPM_MOVING);
         }
-        if (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N') {
+        if (in_park_neutral) {
             if (telemetry.drive_engaged) _adaptives->requestFlush();  // persist learning at the stop
             telemetry.drive_engaged = false;
             _gear_resync_pending = false;

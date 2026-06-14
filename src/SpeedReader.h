@@ -70,8 +70,9 @@ class SpeedReader {
 
     uint16_t _last_eng_ppr = 0, _last_out_ppr = 0;  // hot-apply web PPR changes
     uint32_t _last_ratio_edges = 0;                 // last N2+N3+OUT edge sum acted on (B-4 gate)
+    bool     _hw_ok = true;                          // MCPWM capture init succeeded (else speeds read 0)
 
-    void initChannel(mcpwm_cap_timer_handle_t timer, SpeedChannel &ch, uint8_t pin);
+    bool initChannel(mcpwm_cap_timer_handle_t timer, SpeedChannel &ch, uint8_t pin);
     void configChannel(SpeedChannel &ch, float ppr, float max_rpm);
     float readChannelRPM(SpeedChannel &ch);
     float calculateTurbineRPM(float n2_rpm, float n3_rpm);

@@ -105,7 +105,8 @@ const uint32_t ENGAGE_GRACE_MS        = 1500;   // suppress slip-limp during D-e
 // Fail-safe by design: at boot/reset the pin is LOW = lever released, so a dead
 // ESP32 never traps the driver. Engaged only while moving, to block R/P selection.
 const bool RP_LOCK_ACTIVE_HIGH = true;  // true: drive HIGH to ENGAGE the lock
-const bool ENABLE_RP_LOCK      = true;  // false: never drive the pin (no lock hardware fitted)
+const bool ENABLE_RP_LOCK      = false; // lock hardware NOT fitted yet → never drive the pin.
+                                        // Set true + verify polarity on the bench once wired.
 
 // (MAP sensor transfer function lives in EngineProfile: map_kpa_at_0v / map_kpa_per_volt,
 //  NVS-backed and web-editable. The old TCU_Data MAP_KPA_* constants were dead copies.)

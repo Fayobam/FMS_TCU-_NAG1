@@ -47,19 +47,21 @@ static bool IRAM_ATTR onCaptureISR(mcpwm_cap_channel_handle_t chan,
     return false;
 }
 
-void SpeedReader::initChannel(mcpwm_cap_timer_handle_t timer, SpeedChannel &ch, uint8_t pin) {
+bool SpeedReader::initChannel(mcpwm_cap_timer_handle_t timer, SpeedChannel &ch, uint8_t pin) {
+    if (timer == NULL) return false;
     mcpwm_capture_channel_config_t cconf = {};
     cconf.gpio_num = pin;
     cconf.prescale = 1;
     cconf.flags.pos_edge = true;
     cconf.flags.neg_edge = false;
     cconf.flags.pull_up  = false;
-    ESP_ERROR_CHECK(mcpwm_new_capture_channel(timer, &cconf, &ch.cap_chan));
+    if (mcpwm_new_capture_channel(timer, &cconf, &ch.cap_chan) != ESP_OK) return false;
 
     mcpwm_capture_event_callbacks_t cbs = {};
     cbs.on_cap = onCaptureISR;
-    ESP_ERROR_CHECK(mcpwm_capture_channel_register_event_callbacks(ch.cap_chan, &cbs, &ch));
-    ESP_ERROR_CHECK(mcpwm_capture_channel_enable(ch.cap_chan));
+    if (mcpwm_capture_channel_register_event_callbacks(ch.cap_chan, &cbs, &ch) != ESP_OK) return false;
+    if (mcpwm_capture_channel_enable(ch.cap_chan) != ESP_OK) return false;
+    return true;
 }
 
 // PPR-dependent math: glitch floor, full-rev window, zero-speed timeout.
@@ -79,23 +81,35 @@ void SpeedReader::configChannel(SpeedChannel &ch, float ppr, float max_rpm) {
 void SpeedReader::begin() {
     // One capture timer per MCPWM group; ESP32 classic = 2 groups × 3 channels.
     // Group 0 carries N2/N3/OUT, group 1 carries ENG.
+    // FAIL-SOFT: any MCPWM allocation error must NOT ESP_ERROR_CHECK→abort (a boot loop
+    // = the whole TCU never runs). Instead disable speed sensing and keep going: speeds
+    // read 0, live_ratio falls back to the gear ratio, and shifts complete on their time
+    // backstops. Degraded but driveable, and visible on the dashboard.
     mcpwm_capture_timer_config_t tconf = {};
     tconf.group_id = 0;
     tconf.clk_src  = MCPWM_CAPTURE_CLK_SRC_DEFAULT;
-    ESP_ERROR_CHECK(mcpwm_new_capture_timer(&tconf, &_cap_timer_g0));
+    if (mcpwm_new_capture_timer(&tconf, &_cap_timer_g0) != ESP_OK) { _cap_timer_g0 = NULL; _hw_ok = false; }
     tconf.group_id = 1;
-    ESP_ERROR_CHECK(mcpwm_new_capture_timer(&tconf, &_cap_timer_g1));
-    ESP_ERROR_CHECK(mcpwm_capture_timer_get_resolution(_cap_timer_g0, &_cap_res_hz));
+    if (_hw_ok && mcpwm_new_capture_timer(&tconf, &_cap_timer_g1) != ESP_OK) { _cap_timer_g1 = NULL; _hw_ok = false; }
+    if (_hw_ok) mcpwm_capture_timer_get_resolution(_cap_timer_g0, &_cap_res_hz);
 
-    initChannel(_cap_timer_g0, _n2,  _pin_n2);
-    initChannel(_cap_timer_g0, _n3,  _pin_n3);
-    initChannel(_cap_timer_g0, _out, _pin_out);
-    initChannel(_cap_timer_g1, _eng, _pin_eng);
+    if (_hw_ok && (!initChannel(_cap_timer_g0, _n2,  _pin_n2) ||
+                   !initChannel(_cap_timer_g0, _n3,  _pin_n3) ||
+                   !initChannel(_cap_timer_g0, _out, _pin_out) ||
+                   !initChannel(_cap_timer_g1, _eng, _pin_eng))) _hw_ok = false;
 
-    ESP_ERROR_CHECK(mcpwm_capture_timer_enable(_cap_timer_g0));
-    ESP_ERROR_CHECK(mcpwm_capture_timer_start(_cap_timer_g0));
-    ESP_ERROR_CHECK(mcpwm_capture_timer_enable(_cap_timer_g1));
-    ESP_ERROR_CHECK(mcpwm_capture_timer_start(_cap_timer_g1));
+    if (_hw_ok) {
+        mcpwm_capture_timer_enable(_cap_timer_g0);
+        mcpwm_capture_timer_start(_cap_timer_g0);
+        mcpwm_capture_timer_enable(_cap_timer_g1);
+        mcpwm_capture_timer_start(_cap_timer_g1);
+    }
+
+    if (!_hw_ok) {
+        Serial.println("!!! SpeedReader: MCPWM capture init FAILED — speed sensing DISABLED. "
+                       "Shifts run on time backstops; ratio/limp checks inert. Check pins/wiring.");
+        return;
+    }
 
     _last_eng_ppr = engineProfile.engPpr();
     _last_out_ppr = engineProfile.outPpr();
@@ -176,6 +190,14 @@ void SpeedReader::update() {
     // readChannelRPM() tracks hard deceleration / low-speed shafts (sparse edges)
     // at full loop resolution — the steady-state average only changes when a new
     // edge lands, but the between-edge decel estimate refreshes each tick.
+
+    // Capture HW failed to init: report all shafts stopped. live_ratio then falls
+    // back to the gear ratio and shifts use their time backstops (see begin()).
+    if (!_hw_ok) {
+        telemetry.n2_rpm = telemetry.n3_rpm = 0.0f;
+        telemetry.output_rpm = telemetry.engine_rpm = telemetry.turbine_rpm = 0.0f;
+        return;
+    }
 
     // Hot-apply PPR edits from the web tuner (math-only reconfig, no hardware touch).
     uint16_t eng_ppr = engineProfile.engPpr(), out_ppr = engineProfile.outPpr();
