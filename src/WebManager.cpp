@@ -69,6 +69,7 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         resp["transVariant"] = p->trans_variant;   // 0=small NAG, 1=big NAG
         resp["tcStall"] = p->tc_stall_mult_x100; resp["tcCoupSr"] = p->tc_coupling_sr_x100;
         resp["clPwr"] = p->cl_pressure_enable; resp["pFull"] = p->p_full_scale_mbar;
+        resp["clSpeed"] = p->cl_speed_transitions;
         resp["coefStat"] = p->coef_stationary; resp["coefRel"] = p->coef_releasing;
         resp["coefCold"] = p->coef_apply_cold; resp["coefHot"] = p->coef_apply_hot;
         JsonArray af = resp["applyFric"].to<JsonArray>();
@@ -105,10 +106,17 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         if (doc["clEn"].is<int>())    p->cl_spc_enable = (uint8_t)(doc["clEn"].as<int>() ? 1 : 0);
         if (doc["clKp"].is<int>())    p->cl_spc_kp   = (uint16_t)constrain(doc["clKp"].as<int>(), 0, 1000);
         // Transmission variant: ratios + tooth-blend K switch live (g_trans) — no reboot.
-        if (doc["transVariant"].is<int>()) p->trans_variant = (uint8_t)constrain(doc["transVariant"].as<int>(), 0, (int)TRANS_VARIANT_COUNT - 1);
+        // On an actual CHANGE, load that gearbox's physics clutch-model defaults FIRST, so a
+        // dropdown-only change (no clutch arrays sent) lands on the variant presets; a full
+        // Flash that also changed the variant then overrides with the dashboard's values below.
+        if (doc["transVariant"].is<int>()) {
+            uint8_t newv = (uint8_t)constrain(doc["transVariant"].as<int>(), 0, (int)TRANS_VARIANT_COUNT - 1);
+            if (newv != p->trans_variant) { p->trans_variant = newv; engineProfile.seedClutchModelForVariant(newv); }
+        }
         if (doc["tcStall"].is<int>())   p->tc_stall_mult_x100  = (uint16_t)constrain(doc["tcStall"].as<int>(), 100, 350);
         if (doc["tcCoupSr"].is<int>())  p->tc_coupling_sr_x100 = (uint16_t)constrain(doc["tcCoupSr"].as<int>(), 50, 100);
         if (doc["clPwr"].is<int>())     p->cl_pressure_enable  = (uint8_t)(doc["clPwr"].as<int>() ? 1 : 0);
+        if (doc["clSpeed"].is<int>())   p->cl_speed_transitions = (uint8_t)(doc["clSpeed"].as<int>() ? 1 : 0);
         if (doc["pFull"].is<int>())     p->p_full_scale_mbar   = (uint16_t)constrain(doc["pFull"].as<int>(), 4000, 25000);
         if (doc["coefStat"].is<int>())  p->coef_stationary = (uint8_t)constrain(doc["coefStat"].as<int>(), 50, 255);
         if (doc["coefRel"].is<int>())   p->coef_releasing  = (uint8_t)constrain(doc["coefRel"].as<int>(), 50, 255);

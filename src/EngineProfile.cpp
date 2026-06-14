@@ -15,6 +15,28 @@ void EngineProfile::applyTransVariant() {
                   g_trans.name, g_trans.blend_k, g_trans.ratio[0]);
 }
 
+// Physics-reasoned clutch-model defaults per gearbox variant (NOT OEM data). Derived from
+// P = T·friction/coef + spring: at ~rated input torque the apply clutch reaches ~65% of full
+// line (headroom), with the big 3-4 drum firmest. Big NAG ≈ small × (580/330 ≈ 1.76) clutch
+// capacity + higher line. These are starting points — tune per shift traces / your EGS set.
+void EngineProfile::seedClutchModelForVariant(uint8_t v) {
+    if (v == NAG_BIG) {
+        // W5A580 — bigger clutch packs, higher working line.
+        d.apply_friction[0]   = 6700; d.apply_friction[1]   = 7400; d.apply_friction[2]   = 8800; d.apply_friction[3]   = 6700;
+        d.release_friction[0] = 6700; d.release_friction[1] = 7400; d.release_friction[2] = 8800; d.release_friction[3] = 6700;
+        d.apply_spring_mbar[0]   = 700; d.apply_spring_mbar[1]   = 800; d.apply_spring_mbar[2]   = 1000; d.apply_spring_mbar[3]   = 700;
+        d.release_spring_mbar[0] = 700; d.release_spring_mbar[1] = 800; d.release_spring_mbar[2] = 1000; d.release_spring_mbar[3] = 700;
+        d.p_full_scale_mbar = 18000;     // ~18 bar line at 100% command
+    } else {
+        // W5A330 small NAG (this build) — friction ~4000/coef ≈ 27 mBar/Nm (≈330 Nm → ~8 bar).
+        d.apply_friction[0]   = 3800; d.apply_friction[1]   = 4200; d.apply_friction[2]   = 5000; d.apply_friction[3]   = 3800;
+        d.release_friction[0] = 3800; d.release_friction[1] = 4200; d.release_friction[2] = 5000; d.release_friction[3] = 3800;
+        d.apply_spring_mbar[0]   = 600; d.apply_spring_mbar[1]   = 700; d.apply_spring_mbar[2]   = 900; d.apply_spring_mbar[3]   = 600;
+        d.release_spring_mbar[0] = 600; d.release_spring_mbar[1] = 700; d.release_spring_mbar[2] = 900; d.release_spring_mbar[3] = 600;
+        d.p_full_scale_mbar = 16000;     // ~16 bar line at 100% command
+    }
+}
+
 void EngineProfile::begin() {
     prefs.begin("engine_prof", false);
     if (prefs.getBytesLength("data") == sizeof(d)) {
@@ -66,19 +88,15 @@ void EngineProfile::seedDefaults() {
     d.tc_coupling_sr_x100 = 85;      // multiplication → 1.0 by 0.85 speed ratio (coupling point)
 
     // Physical pressure model (Phase 3) — OFF by default; heuristic % path stays in control
-    // until bench-validated. Coefficients = authentic UN52 PRM_DEFAULT_SETTINGS. Friction
-    // numerators + springs are the per-car EGS52 blob (not open) → reasoned seeds: friction
-    // ~4000 / coef ~150 ≈ 27 mBar/Nm (≈300 Nm → ~8 bar); bigger 3-4 drum firmer.
+    // until bench-validated. Coefficients = authentic UN52 PRM_DEFAULT_SETTINGS; friction +
+    // springs are physics-reasoned (NOT the OEM EGS blob), seeded per gearbox variant below.
     d.cl_pressure_enable = 0;
-    d.coef_stationary  = 100;        // UN52 PRM_DEFAULT_SETTINGS
+    d.coef_stationary  = 100;        // UN52 PRM_DEFAULT_SETTINGS (authentic)
     d.coef_releasing   = 120;
     d.coef_apply_cold  = 185;
     d.coef_apply_hot   = 140;
-    d.apply_friction[0]   = 3800; d.apply_friction[1]   = 4200; d.apply_friction[2]   = 5000; d.apply_friction[3]   = 3800;
-    d.release_friction[0] = 3800; d.release_friction[1] = 4200; d.release_friction[2] = 5000; d.release_friction[3] = 3800;
-    d.apply_spring_mbar[0]   = 600; d.apply_spring_mbar[1]   = 700; d.apply_spring_mbar[2]   = 900; d.apply_spring_mbar[3]   = 600;
-    d.release_spring_mbar[0] = 600; d.release_spring_mbar[1] = 700; d.release_spring_mbar[2] = 900; d.release_spring_mbar[3] = 600;
-    d.p_full_scale_mbar = 16000;     // ~16 bar line at 100% command (bench-measure the real curve)
+    d.cl_speed_transitions = 0;      // ratio-based exits by default; clutch-speed (Phase 1b) opt-in
+    seedClutchModelForVariant(d.trans_variant);   // friction/spring/line per small or big NAG
 
     d.tps_closed_v    = 0.50f;
     d.tps_wot_v       = 2.90f;

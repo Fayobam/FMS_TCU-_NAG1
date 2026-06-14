@@ -99,7 +99,11 @@ Small/big NAG ratios + tooth-blend K are a web-selectable `TRANS_SPECS[]` preset
 big NAG is a dropdown change, not a code change. (Prefill seeds per variant noted in `TRANS_SPECS`;
 fill_t stays user/adapt-owned.)
 
-### Phase 1 — Clutch-speed model (foundation) — 1a ✅ DONE (V17), 1b PENDING BENCH
+### Phase 1 — Clutch-speed model (foundation) — 1a ✅ DONE (V17), 1b ✅ CODE DONE (V22, flag-gated)
+**1b (V22):** clutch-speed phase transitions behind `cl_speed_transitions` (NVS, default OFF):
+FILL→TORQUE when off-going slip > `CLUTCH_MOVE_RPM`; INERTIA/CATCH sync when on-coming slip ≤
+`CLUTCH_SYNC_RPM`. Ratio-based exits stay as the backstop. **Enable only after a signal-gen bench
+run confirms the clutch-speed values/signs per shift** (the on/off-clutch CSV columns from 1a).
 - New `ClutchSpeeds.{h,cpp}` (or fold into `SpeedReader`): `computeClutchSpeeds(n2,n3,out,turbine,
   from,to)` → `{on_clutch_rpm, off_clutch_rpm}` using the §2.1 equations + our ratio constants.
 - Add `on_clutch_rpm` / `off_clutch_rpm` to telemetry + the Shift CSV (they're the best tuning trace).
@@ -147,7 +151,12 @@ Original sub-steps:
 - **Validate:** scope SPC/MPC vs commanded mBar; tune `friction_k` so a known torque holds without
   slip; compare shift feel A/B against the heuristic path.
 
-### Phase 4 — Clutch-speed-driven split adaptation — MEDIUM risk
+### Phase 4 — Clutch-speed-driven split adaptation — DEFERRED (depends on verified 1b)
+Intentionally not implemented yet: it would *learn* from the clutch-speed fill/sync events, which
+are unverified until the 1b bench check. Adapting on unverified signals would ratchet bad trims —
+worse than the current flag/ratio-based Adaptation v2. Do this once `cl_speed_transitions` is
+bench-confirmed; the existing AdaptiveMemory (fill_t/fill_p/apply trims) is the hook point.
+Original note:
 - Replace/augment Adaptation v2 with three offset maps (indexed by shift_idx): **prefill-time**,
   **apply-torque**, **spc** — mirroring `shift_adaptation.cpp`.
 - Fill-time learning: record the cycle at which off-clutch first moves (Phase 1 signal) vs expected

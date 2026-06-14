@@ -876,7 +876,13 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
 
         case PHASE_FILL:                              // upshift: stroke piston, no ratio movement
             setSPC(_fill_p);                          // (flare detection above, confirm-gated)
-            if (t >= _fill_t_ms) { _current_phase = PHASE_TORQUE; _phase_start_tick = xTaskGetTickCount(); }
+            {
+                // Fill complete on time, OR (Phase 1b) when the off-going clutch begins to
+                // release — the clutch-speed signal EGS uses, far cleaner than gross ratio.
+                bool fill_done = (t >= _fill_t_ms) ||
+                    (engineProfile.clSpeedTransitions() && telemetry.off_clutch_rpm > CLUTCH_MOVE_RPM);
+                if (fill_done) { _current_phase = PHASE_TORQUE; _phase_start_tick = xTaskGetTickCount(); }
+            }
             break;
 
         case PHASE_TORQUE:                            // upshift: oncoming takes torque
@@ -902,7 +908,9 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
                            ? constrain(engineProfile.clSpcKp() * _cl_err, -25.0f, 25.0f) : 0.0f;
                 _solenoids->setShiftPressure((uint8_t)constrain(_spc_cmd + trim, 0.0f, 100.0f));
             }
-            if (telemetry.live_ratio <= _ratio_target + 0.03f) {
+            bool synced = (telemetry.live_ratio <= _ratio_target + 0.03f) ||
+                (engineProfile.clSpeedTransitions() && fabsf(telemetry.on_clutch_rpm) <= CLUTCH_SYNC_RPM);
+            if (synced) {
                 if (t < (unsigned long)(0.6f * _inertia_target_ms)) _harsh_detected = true; // too firm
                 finishShift();
             } else if (t >= 600) {
@@ -958,12 +966,16 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
                 }
                 if (_bind_over_ms >= RATIO_EVENT_CONFIRM_MS) telemetry.bind_detected = true;
             }
-            if (telemetry.live_ratio >= _ratio_target - 0.05f &&
-                telemetry.live_ratio <= _ratio_target + 0.05f) {
-                if (_sync_stable_since_ms == 0) _sync_stable_since_ms = millis();
-                else if (millis() - _sync_stable_since_ms > ((_pd_type == PD_TIMED) ? 60UL : 100UL))
-                    finishShift();
-            } else _sync_stable_since_ms = 0;
+            {
+                bool at_sync = (telemetry.live_ratio >= _ratio_target - 0.05f &&
+                                telemetry.live_ratio <= _ratio_target + 0.05f) ||
+                    (engineProfile.clSpeedTransitions() && fabsf(telemetry.on_clutch_rpm) <= CLUTCH_SYNC_RPM);
+                if (at_sync) {
+                    if (_sync_stable_since_ms == 0) _sync_stable_since_ms = millis();
+                    else if (millis() - _sync_stable_since_ms > ((_pd_type == PD_TIMED) ? 60UL : 100UL))
+                        finishShift();
+                } else _sync_stable_since_ms = 0;
+            }
             if (t >= 600) finishShift();
             break;
 

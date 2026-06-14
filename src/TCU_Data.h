@@ -131,6 +131,13 @@ const float DS_BIND_EXTRA_RPM    = 40.0f; // extra output drop (above decel tren
 // single noisy speed sample can never poison the adaptation tables (V10).
 const uint16_t RATIO_EVENT_CONFIRM_MS = 10;
 
+// --- Clutch-speed phase transitions (Phase 1b, opt-in via EngineProfile.cl_speed_transitions) ---
+// Off-going clutch slip above MOVE = fill complete / element releasing; on-coming slip below
+// SYNC = synchronised. These read the clutch-speed model (telemetry.on/off_clutch_rpm), which is
+// far less noisy than gross turbine/output ratio. Bench-verify the values/signs before enabling.
+const float CLUTCH_MOVE_RPM = 50.0f;   // off-going slip that counts as "started to release"
+const float CLUTCH_SYNC_RPM = 40.0f;   // on-coming slip that counts as "synchronised"
+
 // --- Predictive overrev (auto upshift) ---
 // The forced upshift only unloads the engine after PREP+FILL+part of TORQUE (~250-400ms);
 // at WOT in a low gear the engine gains several hundred rpm in that window. Trigger on

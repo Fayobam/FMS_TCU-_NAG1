@@ -214,7 +214,7 @@
         </div>
         <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:0.6rem;">
             <label class="ep-field">Transmission
-                <select id="ep-transVariant" style="width:auto;margin-left:6px;">
+                <select id="ep-transVariant" style="width:auto;margin-left:6px;" onchange="changeVariant()">
                     <option value="0">W5A330 Small NAG</option>
                     <option value="1">W5A580 Big NAG</option>
                 </select>
@@ -228,6 +228,7 @@
             <label class="ep-field">Conv. stall mult (×100) <input type="number" min="100" max="350" id="ep-tcStall"></label>
             <label class="ep-field">Conv. coupling SR (×100) <input type="number" min="50" max="100" id="ep-tcCoupSr"></label>
             <label class="ep-field">Pressure model (torque→P) <input type="checkbox" id="ep-clPwr" style="width:auto;transform:scale(1.3);margin-left:6px;"></label>
+            <label class="ep-field">Clutch-speed transitions <input type="checkbox" id="ep-clSpeed" style="width:auto;transform:scale(1.3);margin-left:6px;"></label>
             <label class="ep-field">Line @100% (mBar) <input type="number" min="4000" max="25000" id="ep-pFull"></label>
             <label class="ep-field">Coef apply cold <input type="number" min="50" max="255" id="ep-coefCold"></label>
             <label class="ep-field">Coef apply hot <input type="number" min="50" max="255" id="ep-coefHot"></label>
@@ -416,6 +417,14 @@
 
         function requestProfile(){ ws.send(JSON.stringify({ cmd: "get_profile" })); }
 
+        // Switching the gearbox reseeds that variant's physics clutch defaults on the TCU;
+        // send only the variant, then re-fetch so the fields show the new defaults.
+        function changeVariant(){
+            const v = parseInt(document.getElementById('ep-transVariant').value)||0;
+            ws.send(JSON.stringify({ cmd:"set_profile", transVariant: v }));
+            setTimeout(requestProfile, 250);
+        }
+
         function renderProfile(p){
             profile = p;
             buildTorqueGrid(p.rpm, p.map);
@@ -435,6 +444,7 @@
             document.getElementById('ep-tcStall').value  = p.tcStall;
             document.getElementById('ep-tcCoupSr').value = p.tcCoupSr;
             document.getElementById('ep-clPwr').checked  = !!p.clPwr;
+            document.getElementById('ep-clSpeed').checked = !!p.clSpeed;
             document.getElementById('ep-pFull').value    = p.pFull;
             document.getElementById('ep-coefCold').value = p.coefCold;
             document.getElementById('ep-coefHot').value  = p.coefHot;
@@ -487,6 +497,7 @@
                 map0: parseFloat(document.getElementById('ep-map0').value)||-10,
                 mapV: parseFloat(document.getElementById('ep-mapV').value)||86,
                 clPwr: document.getElementById('ep-clPwr').checked ? 1 : 0,
+                clSpeed: document.getElementById('ep-clSpeed').checked ? 1 : 0,
                 pFull: parseInt(document.getElementById('ep-pFull').value)||16000,
                 coefStat: parseInt(document.getElementById('ep-coefStat').value)||100,
                 coefRel:  parseInt(document.getElementById('ep-coefRel').value)||120,

@@ -22,7 +22,7 @@
 
 #define EP_RPM_BINS 8
 #define EP_MAP_BINS 8
-#define EP_MAGIC    0x4E414738u   // 'NAG8' — bump if the struct layout changes (v8: UN52 pressure coeffs)
+#define EP_MAGIC    0x4E414739u   // 'NAG9' — bump if the struct layout changes (v9: + clutch-speed transitions)
 
 struct EngineProfileData {
     int16_t  torque[EP_RPM_BINS][EP_MAP_BINS];  // Nm on the RPM×MAP grid
@@ -57,6 +57,7 @@ struct EngineProfileData {
     uint16_t apply_spring_mbar[4];              // oncoming return-spring preload (mBar)
     uint16_t release_spring_mbar[4];            // off-going return-spring preload (mBar)
     uint16_t p_full_scale_mbar;                 // line pressure at 100% command (mBar→% solenoid map)
+    uint8_t  cl_speed_transitions;              // 0 = ratio-based phase exits (default), 1 = clutch-speed (Phase 1b)
     uint32_t magic;                             // sanity/version tag
 };
 
@@ -70,6 +71,7 @@ class EngineProfile {
     void begin();
     void save();
     void applyTransVariant();   // load TRANS_SPECS[trans_variant] into g_trans (call after any change)
+    void seedClutchModelForVariant(uint8_t v);  // physics defaults for small/big NAG clutch model
     uint8_t transVariant() const { return d.trans_variant; }
 
     float   estimateTorque(float rpm, float map_kpa);  // bilinear ENGINE Nm
@@ -94,6 +96,7 @@ class EngineProfile {
 
     // --- Physical pressure model (Phase 3), UN52 form: P = T·friction/coef + spring ---
     bool clPressureEnable() const { return d.cl_pressure_enable != 0; }
+    bool clSpeedTransitions() const { return d.cl_speed_transitions != 0; }
     // Oncoming (sliding) coefficient, ATF-temp interpolated 29→65 °C (cold ATF grips more → higher
     // coef → less pressure), clamped to the endpoints — exactly UN52 PressureManager::sliding_coefficient.
     float slidingCoef(float atf_c) const {
