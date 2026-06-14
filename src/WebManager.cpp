@@ -276,6 +276,7 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["onClutch"]  = (int)telemetry.on_clutch_rpm;   // clutch-speed model (0 unless shifting)
     doc["offClutch"] = (int)telemetry.off_clutch_rpm;
     doc["tInput"]    = (int)telemetry.t_input_nm;      // input/turbine torque (engine × converter factor)
+    doc["tqCut"]     = telemetry.torque_cut_active;     // rusEFI shift-retard window asserted
 
     char buffer[1024];
     size_t len = serializeJson(doc, buffer, sizeof(buffer));

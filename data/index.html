@@ -621,6 +621,7 @@
                 const cv = document.getElementById('class-val');
                 let cls = CLASS_NAMES[data.shiftClass] || '--';
                 if (data.shiftClass === 2) cls += (PD_NAMES[data.pdType] || '');
+                if (data.tqCut) cls += ' ✂';   // rusEFI torque-cut window active
                 cv.innerText = cls;
                 cv.style.color = (data.shiftClass === 0 || data.shiftClass === 2) ? 'var(--orange)' : 'var(--slate-300)';
 

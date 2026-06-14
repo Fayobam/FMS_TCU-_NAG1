@@ -154,7 +154,13 @@ Original sub-steps:
   fill cycles; nudge prefill ±1 (their `calc_t_adapt_offset_adv` uses √(pressure) scaling — port it).
 - ATF-gated, deadband, Core-0 NVS flush as today.
 
-### Phase 5 — Ramped, phase-aligned torque-cut — LOW/MED risk
+### Phase 5 — Phase-aligned torque-cut — ✅ DONE (V21)
+The rusEFI cut is now a **window**, not an INERTIA-only pulse: lead-in during TORQUE (retard has
+latency → request before the speed change), hold through INERTIA, release at sync (phase → LOCK).
+High-load power-upshift only (`ENABLE_TORQUE_CUT` / `TORQUE_CUT_MIN_LOAD`). Exposed: `tqCut`
+telemetry, trace flag bit3, and a ✂ marker on the dashboard class badge. A single GPIO controls
+the **window only** — amplitude/ramp shaping would need a CAN torque request (out of scope).
+Original note:
 - Turn the binary rusEFI GPIO into a timed envelope: assert lead-in before INERTIA, hold through the
   speed change, release at sync — sized by `t_est` and `target_shift_time` (their `linear_ramp_with
   _timer` shape). Even as a single GPIO, aligning the *window* to the clutch-speed sync improves the

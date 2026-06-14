@@ -283,7 +283,7 @@ void ShiftScheduler::captureTrace() {
     s.spc   = (uint8_t)telemetry.shift_pressure_pct;
     s.mpc   = (uint8_t)telemetry.line_pressure_pct;
     s.flags = (telemetry.flare_detected ? 1 : 0) | (telemetry.bind_detected ? 2 : 0) |
-              (_harsh_detected ? 4 : 0);
+              (_harsh_detected ? 4 : 0) | (telemetry.torque_cut_active ? 8 : 0);
     s.ratio_x1000 = (uint16_t)constrain((int)(telemetry.live_ratio * 1000.0f), 0, 65535);
     s.eng   = (uint16_t)constrain((int)telemetry.engine_rpm,  0, 65535);
     s.turb  = (uint16_t)constrain((int)telemetry.turbine_rpm, 0, 65535);
@@ -786,10 +786,17 @@ void ShiftScheduler::update() {
         shiftTrace.ready = true;     // Core 0 serializes + sends the trace
     }
 
-    // rusEFI torque-cut: only during a high-load power-up inertia phase (spec §9).
-    _solenoids->setTorqueCut(_current_phase == PHASE_INERTIA &&
-                             _sclass == SC_POWER_UP &&
-                             _load_at_start > TORQUE_CUT_MIN_LOAD);
+    // rusEFI torque-cut envelope (Phase 5): a phase-aligned WINDOW, not just an INERTIA pulse.
+    // Lead-in during TORQUE (ignition retard has latency, so request it before the inertia
+    // speed change begins), hold through INERTIA, release at sync (phase leaves INERTIA → LOCK).
+    // Aligning the window to the torque-transfer + speed-change event lets the oncoming clutch
+    // absorb less energy. A single GPIO controls the window only — amplitude/ramp shaping would
+    // need a CAN torque request (out of scope). Still high-load power-upshift only.
+    bool tq_cut = (_sclass == SC_POWER_UP) &&
+                  (_load_at_start > TORQUE_CUT_MIN_LOAD) &&
+                  (_current_phase == PHASE_TORQUE || _current_phase == PHASE_INERTIA);
+    telemetry.torque_cut_active = tq_cut && ENABLE_TORQUE_CUT;
+    _solenoids->setTorqueCut(tq_cut);
 
     updateTCC(ptick);
 }

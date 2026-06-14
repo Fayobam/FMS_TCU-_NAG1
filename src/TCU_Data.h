@@ -290,6 +290,7 @@ struct TCU_Telemetry {
     float   load_pct     = 0.0f;  // 0-100% of T_MAX (drives all pressure maps)
     uint8_t shift_class  = 0;     // mirrors ShiftClass for the active/last shift
     uint8_t pd_type      = 0;     // mirrors PowerDownType when class is SC_POWER_DOWN
+    bool    torque_cut_active = false;  // rusEFI shift-retard window asserted (Phase 5)
 };
 
 extern TCU_Telemetry telemetry;
