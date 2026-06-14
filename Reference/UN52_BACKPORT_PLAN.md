@@ -166,6 +166,25 @@ depends on 1. Phase 4 depends on 1 (+3 ideally). Phase 5 is independent and can 
 
 ---
 
+## 3a. Calibration provenance — where the realistic numbers come from
+
+Researched June 2026 (UN52 wiki + config-app repo):
+- **Coefficients (authentic, in our defaults):** UN52 `PRM_DEFAULT_SETTINGS` — stationary 100,
+  releasing 120, apply cold 185 / hot 140. These are open and seeded in EngineProfile.
+- **friction_map + release springs (per-car OEM):** extracted from a real **EGS52 unit** and
+  distributed inside **`egs_db.bin`** in `rnd-ash/ultimate-nag52-config-app` (parsed by
+  `backend/src/diag/calibration.rs`), a database filterable **by chassis code / gearbox type**.
+  UN52 itself "requires calibration from an original EGS unit to function" (wiki, 03/2024). There
+  are 2 small-NAG tables; the common one is "the weakest calibration found on EGS."
+- **Our W203 C230K box = small NAG (W5A330).** To get the exact mechanical numbers: run the
+  config app, filter calibrations by chassis (W203 / C230K) or gearbox (small NAG), read the
+  mechanical calibration (`friction_map`, `release_spring_pressure`) and the hydraulic
+  pressure/solenoid map, and enter them in our Engine Profile dashboard (fields already present).
+- **Why we didn't inline them:** they are OEM proprietary calibration constants the project ships
+  per-owner, not loose published values; our seeds are physics-plausible placeholders
+  (friction ~4000/coef ≈ 27 mBar/Nm, 3-4 drum firmest) pending the owner's `egs_db` set or a bench
+  pull. The model structure + coefficients are correct, so dropping in real numbers is data-only.
+
 ## 4. Notes / risks
 - **Calibration provenance:** their friction/spring numbers live in `egs_calibration` (OEM EGS
   flash blobs) keyed to clutch geometry. We can seed from the small-NAG values but must treat them
