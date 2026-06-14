@@ -57,8 +57,8 @@ void SolenoidDriver::processRoutingSolenoid(RoutingSolenoid &sol) {
     if (sol.state == STATE_KICKING) {
         TickType_t current_tick = xTaskGetTickCount();
         if ((current_tick - sol.kick_start_tick) >= (60 / portTICK_PERIOD_MS)) {
-            ledcWrite(sol.pin, 85);     // ~33% hold current to save the 4-ohm coil
-            sol.state = STATE_HOLDING;
+            ledcWrite(sol.pin, 95);     // ~37% hold (OEM) — enough to keep the valve seated,
+            sol.state = STATE_HOLDING;  // low enough to save the 4-ohm coil. Matches garage-Y4 hold.
         }
     }
 }
@@ -77,7 +77,7 @@ void SolenoidDriver::fireShiftSolenoid(uint8_t requested_pin) {
     // label drifts until limp catches it). The shift now owns Y4; garage ownership clears.
     bool garage_held = (target == &_y4 && _y4_garage_owned);
     if (target->state == STATE_OFF || garage_held) {
-        ledcWrite(target->pin, 212);    // ~83% kick to snap valve open
+        ledcWrite(target->pin, 204);    // ~80% kick (OEM) to snap the valve open, 60ms (see update)
         target->kick_start_tick = xTaskGetTickCount();
         target->state = STATE_KICKING;
         if (garage_held) _y4_garage_owned = false;   // shift took Y4 over from the garage pulse
