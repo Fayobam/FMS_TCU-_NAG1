@@ -17,7 +17,7 @@
 #include "TCU_Data.h"
 
 // --- HARDWARE CALIBRATION ---
-#define TEMP_PULLUP_RESISTOR_OHMS 1000.0f
+#define TEMP_PULLUP_RESISTOR_OHMS 2000.0f   // matches board R9 (2K pull-up to +3.3V)
 #define ADC_REF_VOLTAGE 3.3f
 // TPS/MAP calibration lives in EngineProfile (NVS, web-editable).
 
