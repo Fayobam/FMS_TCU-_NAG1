@@ -46,9 +46,9 @@ void InputManager::update() {
     decodePRND();
     readPaddles();
     switch (_adc_phase) {
-        case 0: readTPS();       break;
-        case 1: readMAP();       break;
-        case 2: readTempAndPN(); break;
+        case 0: readTPS();  break;
+        case 1: readMAP();  break;
+        case 2: readTemp(); break;
     }
     _adc_phase = (_adc_phase + 1) % 3;
 }
@@ -85,6 +85,11 @@ void InputManager::decodePRND() {
         case 0b1010: telemetry.prnd_state = '1'; break;
         // invalid/between-detent code: keep last known state
     }
+
+    // P/N for engagement gating now comes from the SHIFTER (this 4-bit decode),
+    // NOT the multiplexed temp pin. Frees pin 39 to be pure ATF temp and removes
+    // the open-sensor / cold-NTC false-"P/N" that could block drive engagement.
+    telemetry.pn_switch_raw = (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N');
 }
 
 // Rising-edge latch: one request per physical pull. Holding the paddle does
@@ -138,19 +143,17 @@ float InputManager::calculateTemperatureFromResistance(float resistance_ohms) {
     return constrain(temp_c, -20.0f, 150.0f);
 }
 
-// Multiplexed ATF temp + P/N switch (writes pn_switch_raw, NOT a latched state)
-void InputManager::readTempAndPN() {
+// ATF temp on pin 39. P/N now comes from the shifter (decodePRND), so this pin is
+// purely the thermistor. A reading above ~3.0V means the line is open / pulled to
+// the rail — the conductor-plate starter-lockout opening it in P/N, or a
+// disconnected sensor — NOT a real temperature, so HOLD the last good value rather
+// than computing a bogus very-cold reading. Below ~0.1V is an implausible short.
+void InputManager::readTemp() {
     float pin_voltage = analogReadMilliVolts(_temp_sensor_pin) / 1000.0f;
 
-    if (pin_voltage > 3.0f) {
-        telemetry.pn_switch_raw = true;          // raw reading only
-        telemetry.atf_temp_c = _last_known_temp_c;
-    } else {
-        telemetry.pn_switch_raw = false;
-        if (pin_voltage > 0.1f) {
-            float resistance_ohms = TEMP_PULLUP_RESISTOR_OHMS * (pin_voltage / (ADC_REF_VOLTAGE - pin_voltage));
-            _last_known_temp_c = calculateTemperatureFromResistance(resistance_ohms);
-            telemetry.atf_temp_c = _last_known_temp_c;
-        }
+    if (pin_voltage > 0.1f && pin_voltage < 3.0f) {
+        float resistance_ohms = TEMP_PULLUP_RESISTOR_OHMS * (pin_voltage / (ADC_REF_VOLTAGE - pin_voltage));
+        _last_known_temp_c = calculateTemperatureFromResistance(resistance_ohms);
     }
+    telemetry.atf_temp_c = _last_known_temp_c;   // hold last good value when out of range
 }

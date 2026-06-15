@@ -265,7 +265,8 @@ struct TCU_Telemetry {
     bool reverse_abuse_active = false;   // R selected while moving forward — pressure dumped
 
     // --- Selector sensing (SEPARATED to fix the fighting-writer bug) ---
-    bool pn_switch_raw  = true;   // Raw multiplexed P/N switch reading (InputManager owns this)
+    bool pn_switch_raw  = true;   // P/N from the 4-bit shifter (P||N), set in decodePRND. Diagnostics
+                                  // only — engagement reads the plate range directly, not this.
     bool drive_engaged  = false;  // Scheduler latch: we have completed garage engagement
 
     // --- Solenoid Live Data (these are now the single source of truth) ---

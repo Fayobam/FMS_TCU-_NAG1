@@ -45,14 +45,14 @@ class InputManager {
     unsigned long _last_paddle_up_time;
     unsigned long _last_paddle_down_time;
 
-    uint8_t _adc_phase;   // round-robin: 0=TPS, 1=MAP, 2=temp/PN
+    uint8_t _adc_phase;   // round-robin: 0=TPS, 1=MAP, 2=temp
 
     float calculateTemperatureFromResistance(float resistance_ohms);
     void decodePRND();
     void readPaddles();
     void readTPS();
     void readMAP();
-    void readTempAndPN();
+    void readTemp();   // ATF temp on pin 39 (P/N now from the shifter, not multiplexed here)
 
   public:
     InputManager(uint8_t temp_sensor_pin, uint8_t tps_pin, uint8_t map_pin);
