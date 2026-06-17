@@ -22,7 +22,7 @@
 
 #define EP_RPM_BINS 8
 #define EP_MAP_BINS 8
-#define EP_MAGIC    0x4E414739u   // 'NAG9' — bump if the struct layout changes (v9: + clutch-speed transitions)
+#define EP_MAGIC    0x4E414741u   // 'NAGA' — bump re-seeds NVS to seedDefaults (vA: BL-5 cl_spc default OFF)
 
 struct EngineProfileData {
     int16_t  torque[EP_RPM_BINS][EP_MAP_BINS];  // Nm on the RPM×MAP grid

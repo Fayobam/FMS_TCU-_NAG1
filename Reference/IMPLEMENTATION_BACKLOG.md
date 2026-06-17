@@ -13,8 +13,8 @@ Risk: how much it touches load-bearing/boot/control paths.
 | BL-1 | **Input-shaft trust flag** — in gears 2/3/4 not shifting, `\|N2−N3\| > ~100 RPM` ⇒ bad speed sensor ⇒ suppress false limp | rnd-ash V1 + review | low | ✅ |
 | BL-2 | **output==0 downshift guard** — a dead output sensor reads "stopped"; block high-speed downshift instead of allowing it | review | low | ✅ (V23, turbine-independent prediction) |
 | BL-3 | **MCPWM init graceful-fail** — replace `ESP_ERROR_CHECK` (reboot loop) with a degraded-mode flag so a capture-alloc failure doesn't brick boot | review (completeness) | med (boot) | ✅ (V23, `_hw_ok`) |
-| BL-4 | **RP_LOCK default OFF for first drive** (`ENABLE_RP_LOCK=false`) until polarity bench-checked | review | trivial | 🟡 |
-| BL-5 | **cl_spc first-drive default** — ship `cl_spc_enable=0` or low Kp by default (currently 1 / Kp=80) | review | low | 🟡 |
+| BL-4 | **RP_LOCK default OFF for first drive** — `ENABLE_RP_LOCK=false` (V23) + polarity CONFIRMED by owner (HIGH=lock) | review | trivial | ✅ |
+| BL-5 | **cl_spc first-drive default** — `cl_spc_enable=0` (pure feedforward); EP_MAGIC bumped NAG9→NAGA to re-seed | review | low | ✅ |
 | BL-13 | **Battery-voltage feed-forward** on pressure-solenoid duty — we have no current sensing, so open-loop duty→pressure drifts with VIN/coil-temp; compensate duty for measured VIN if a VIN sense exists | rnd-ash V2 | med | 🟡 (needs VIN sense) |
 | BL-14 | **Structured DTC logging** for faults (sensor/overspeed/limp reasons) — rnd-ash lists it as TODO; we have limp but no DTC store | rnd-ash V2 | low | 🔵 |
 

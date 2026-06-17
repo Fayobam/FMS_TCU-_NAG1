@@ -101,10 +101,10 @@ const float REVERSE_INHIBIT_SPEED_RPM = 150.0f; // above this, R is inhibited / 
 const uint8_t REVERSE_ABUSE_LINE_PCT  = 15;     // line% if R is forced while moving (slip, not shock)
 const uint32_t ENGAGE_GRACE_MS        = 1500;   // suppress slip-limp during D-engagement clutch sync
 
-// RP_LOCK shift-lock solenoid — VERIFY POLARITY ON YOUR SHIFTER before trusting it.
+// RP_LOCK shift-lock solenoid. Polarity CONFIRMED by owner: HIGH = lock engaged.
 // Fail-safe by design: at boot/reset the pin is LOW = lever released, so a dead
 // ESP32 never traps the driver. Engaged only while moving, to block R/P selection.
-const bool RP_LOCK_ACTIVE_HIGH = true;  // true: drive HIGH to ENGAGE the lock
+const bool RP_LOCK_ACTIVE_HIGH = true;  // confirmed: drive HIGH to ENGAGE the lock
 const bool ENABLE_RP_LOCK      = false; // lock hardware NOT fitted yet → never drive the pin.
                                         // Set true + verify polarity on the bench once wired.
 

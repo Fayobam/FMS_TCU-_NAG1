@@ -81,8 +81,10 @@ void EngineProfile::seedDefaults() {
     d.lug_rpm         = 1100;
     d.eng_ppr         = 60;     // M111 60-tooth default; use rusEFI's clean tach out, NOT raw 60-2
     d.out_ppr         = 24;     // current custom output-shaft wheel; 48-60 recommended
-    d.cl_spc_enable   = 1;      // closed-loop SPC in upshift INERTIA (feedforward + P trim)
-    d.cl_spc_kp       = 80;     // SPC%-trim per unit ratio error (bench-tune; 0 = pure open-loop)
+    d.cl_spc_enable   = 0;      // BL-5: closed-loop SPC trim OFF by default → pure feedforward ramp
+                                // for first drives (safe while live_ratio is unverified). Opt in on
+                                // the dashboard once speed signals are confirmed clean on the bench.
+    d.cl_spc_kp       = 80;     // SPC%-trim per unit ratio error (only used when cl_spc_enable=1)
     d.trans_variant   = NAG_SMALL;   // W5A330 this build; switch to NAG_BIG on the dashboard
     d.tc_stall_mult_x100  = 200;     // ~2.0× torque multiplication at stall (722.6 converter; tune)
     d.tc_coupling_sr_x100 = 85;      // multiplication → 1.0 by 0.85 speed ratio (coupling point)
