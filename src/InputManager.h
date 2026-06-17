@@ -21,6 +21,15 @@
 #define ADC_REF_VOLTAGE 3.3f
 // TPS/MAP calibration lives in EngineProfile (NVS, web-editable).
 
+// Analog plausibility bounds (BL-16). A healthy TPS/MAP sits well inside these; a pin
+// railed low (open → pulled to GND by the divider) or high (short to supply) is not a
+// real reading → substitute a SAFE default instead of a phantom value: TPS→closed (0%),
+// MAP→atmospheric (100 kPa). Bounds are generous to never clip a valid WOT/boost reading.
+const float TPS_VALID_MIN_V = 0.15f;
+const float TPS_VALID_MAX_V = 3.20f;
+const float MAP_VALID_MIN_V = 0.15f;
+const float MAP_VALID_MAX_V = 3.20f;
+
 const uint8_t  PRND_STABLE_MS     = 20;  // 4-bit code must hold this long to be accepted
 const uint16_t PADDLE_DEBOUNCE_MS = 50;  // min gap between accepted paddle edges
 

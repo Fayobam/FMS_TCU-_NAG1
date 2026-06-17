@@ -41,6 +41,8 @@ void ShiftScheduler::begin() {
     _eng_rpm_prev_sample = 0.0f;
     _eng_roc_sample_ms = millis();
     _eng_rpm_per_s = 0.0f;
+    _n2n3_fault_since_ms = 0;
+    telemetry.input_speed_trusted = true;
 }
 
 bool ShiftScheduler::isForwardRange() {
@@ -485,6 +487,13 @@ void ShiftScheduler::checkLimpMode(float target_ratio) {
         return;
     }
 
+    // If the N2/N3 plausibility check failed, turbine_rpm is unreliable — a bad speed
+    // sensor must never trigger transmission-protection limp (rnd-ash input-shaft trust).
+    if (!telemetry.input_speed_trusted) {
+        telemetry.is_slipping = false;
+        return;
+    }
+
     // Slip detection only while cruising, in D, moving, and NOT at high load
     // (high-boost launches legitimately slip the converter and chirp tyres).
     bool conditions = (_current_phase == PHASE_CRUISING &&
@@ -682,6 +691,23 @@ void ShiftScheduler::update() {
     telemetry.shift_phase = (uint8_t)_current_phase;
     calculateLiveRatio();
     computeClutchSpeeds();   // on/off-clutch slip (clutch-speed model; exposed for bench verify)
+
+    // Input-shaft trust (rnd-ash): in gears 2/3/4 the front planetary is locked, so
+    // N2 ≈ N3. A persistent mismatch there ⇒ a dead/wrong N2 or N3 ⇒ turbine_rpm (=f(N2,N3))
+    // is unreliable ⇒ checkLimpMode must not fire on it. Only evaluable in 2/3/4 while
+    // cruising (in 1/5 N3≈0 by design, and N2≠N3 during a shift); HELD otherwise so a
+    // detected fault persists into 5th until it actually recovers back in 2/3/4.
+    if (_current_phase == PHASE_CRUISING &&
+        telemetry.current_gear >= 2 && telemetry.current_gear <= 4) {
+        if (fabsf(telemetry.n2_rpm - telemetry.n3_rpm) > INPUT_TRUST_N2N3_MAX_RPM) {
+            if (_n2n3_fault_since_ms == 0) _n2n3_fault_since_ms = millis();
+            else if (millis() - _n2n3_fault_since_ms > INPUT_TRUST_CONFIRM_MS)
+                telemetry.input_speed_trusted = false;
+        } else {
+            _n2n3_fault_since_ms = 0;
+            telemetry.input_speed_trusted = true;
+        }
+    }
 
     // Torque estimate is the master input for all pressure/class decisions (ATSG p.77).
     // From the per-engine torque surface (RPM × MAP), so it ports across engines.

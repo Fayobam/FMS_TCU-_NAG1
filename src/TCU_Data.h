@@ -139,6 +139,13 @@ const uint16_t RATIO_EVENT_CONFIRM_MS = 10;
 const float CLUTCH_MOVE_RPM = 50.0f;   // off-going slip that counts as "started to release"
 const float CLUTCH_SYNC_RPM = 40.0f;   // on-coming slip that counts as "synchronised"
 
+// --- Input-shaft trust (rnd-ash clutch-speed video) ---
+// In gears 2/3/4 the front planetary is locked, so N2 ≈ N3. A mismatch beyond this,
+// held this long, means a dead/wrong N2 or N3 → the N2/N3-derived turbine speed is
+// unreliable → suppress false limp (limp keys off turbine vs output*ratio).
+const float    INPUT_TRUST_N2N3_MAX_RPM = 100.0f;
+const uint16_t INPUT_TRUST_CONFIRM_MS   = 200;
+
 // --- Predictive overrev (auto upshift) ---
 // The forced upshift only unloads the engine after PREP+FILL+part of TORQUE (~250-400ms);
 // at WOT in a low gear the engine gains several hundred rpm in that window. Trigger on
@@ -235,6 +242,8 @@ struct TCU_Telemetry {
     // --- Engine Load ---
     float tps_pct = 0.0f;
     float map_kpa = 100.0f;
+    bool  tps_valid = true;   // false = TPS reading railed (open/short) → substituted closed (BL-16)
+    bool  map_valid = true;   // false = MAP reading railed → substituted atmospheric (BL-16)
 
     // --- States ---
     uint8_t current_gear = 1;
@@ -246,6 +255,7 @@ struct TCU_Telemetry {
     bool limp_reset_request = false;   // Set true (e.g. from web) to attempt recovery
     bool is_slipping       = false;
     unsigned long slip_start_time_ms = 0;
+    bool input_speed_trusted = true;   // N2/N3 plausible (locked in 2/3/4); false = bad speed sensor (BL-1)
     // Status strings are fixed buffers (NOT Arduino String) because Core 1 writes
     // them while Core 0 reads them in the telemetry JSON. A heap-backed String can
     // realloc mid-read and corrupt the heap across cores. The seq counter is a

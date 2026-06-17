@@ -77,6 +77,7 @@ class ShiftScheduler {
     uint16_t _flare_over_ms;           // consecutive ms the flare condition has held
     uint16_t _bind_over_ms;            // consecutive ms the bind condition has held
     float    _cl_err = 0.0f;           // closed-loop SPC schedule error (INERTIA; 0 elsewhere)
+    unsigned long _n2n3_fault_since_ms = 0; // when |N2−N3| first exceeded the trust band in 2/3/4 (BL-1)
 
     bool  _prev_pn_raw;             // edge-detect for the engagement (lever) window
     unsigned long _engage_grace_until_ms; // suppress slip-limp during D-engagement sync

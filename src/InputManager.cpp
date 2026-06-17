@@ -121,6 +121,15 @@ void InputManager::readPaddles() {
 void InputManager::readTPS() {
     // Calibration from the engine profile so swaps need no recompile.
     float tps_v = analogReadMilliVolts(_tps_pin) / 1000.0f;
+    // BL-16: a railed reading (open/short) is not a real throttle — ease toward CLOSED
+    // (safe: no phantom power-shift or high load) and flag invalid, rather than feed garbage.
+    if (tps_v < TPS_VALID_MIN_V || tps_v > TPS_VALID_MAX_V) {
+        telemetry.tps_valid = false;
+        _tps_filtered += 0.2f * (0.0f - _tps_filtered);
+        telemetry.tps_pct = _tps_filtered;
+        return;
+    }
+    telemetry.tps_valid = true;
     float tps_closed = engineProfile.tpsClosedV(), tps_wot = engineProfile.tpsWotV();
     float tps_span = (tps_wot - tps_closed);
     float tps_pct = (tps_span > 0.01f) ? (tps_v - tps_closed) / tps_span * 100.0f : 0.0f;
@@ -132,6 +141,15 @@ void InputManager::readTPS() {
 
 void InputManager::readMAP() {
     float map_v = analogReadMilliVolts(_map_pin) / 1000.0f;
+    // BL-16: a railed reading (open/short) is not a real MAP — ease toward ATMOSPHERIC
+    // (safe: no phantom boost/high load) and flag invalid.
+    if (map_v < MAP_VALID_MIN_V || map_v > MAP_VALID_MAX_V) {
+        telemetry.map_valid = false;
+        _map_filtered += 0.2f * (100.0f - _map_filtered);
+        telemetry.map_kpa = _map_filtered;
+        return;
+    }
+    telemetry.map_valid = true;
     float map_kpa = engineProfile.mapAt0V() + (map_v * engineProfile.mapPerV());
     map_kpa = constrain(map_kpa, 20.0f, 260.0f); // sanity clamp
     _map_filtered += 0.2f * (map_kpa - _map_filtered);
