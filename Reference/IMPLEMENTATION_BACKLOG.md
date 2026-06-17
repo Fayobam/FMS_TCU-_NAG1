@@ -27,6 +27,8 @@ Risk: how much it touches load-bearing/boot/control paths.
 | BL-9 | **TCC pre-fill-to-lockup** once torque transfer completes (off-clutch speed passes on-clutch) — earlier than the fixed post-shift timer | rnd-ash V1 | med | ⏸ |
 | BL-10 | Overlap pressure ramp = interpolate vs applied-clutch speed (ease-out shock damping) | rnd-ash V1 | med | ⏸ |
 | BL-11 | Torque-cut RELEASE gated on clutch sync, not a pure timer (amplitude ramp = CAN, N/A for us) | rnd-ash V1 | low | ⏸ |
+| BL-15 | **Two-stage pre-fill** — high-pressure ramp then low-pressure ramp before the clutch moves on (OEM method), vs our single `_fill_p`/`_fill_t_ms` | rnd-ash V3 | med | ⏸ |
+| BL-16 | **Signal-validity → safe substitution** — implausible/lost TPS/MAP/speed ⇒ inject a moderate default (OEM pedal→25% pattern), not garbage; generalizes BL-1 | rnd-ash V3 | low | 🔵 |
 
 ## C. Auto mode
 | ID | Item | Source | Risk | Status |

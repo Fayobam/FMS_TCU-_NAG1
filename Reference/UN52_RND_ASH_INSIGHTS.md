@@ -118,3 +118,43 @@ table**, and closes the loop (armature position ⇒ current draw ⇒ real-time p
 ### Action items (added to backlog)
 - [ ] BL-13: battery-voltage feed-forward on pressure-solenoid duty (needs a VIN sense — HW check).
 - [ ] Mark the gear-latch concern RESOLVED in the backlog / review verdict.
+
+---
+
+## Video 3 (processed) — Reverse-engineering the OEM EGS-52 firmware (Ghidra)
+OEM-internals deep dive. Mostly validation + a couple of concrete refinements.
+
+### ✅ Validates our approach
+- **20 ms cycle / "tick" quantization.** OEM runs the whole gearbox app (`MB_layer_update`) on one
+  thread **every 20 ms**; all its timers are countdown counters in **20 ms ticks** ("cycles" in DAS).
+  rnd-ash even built a ms↔20ms-tick compatibility layer to port OEM logic. → Our `PRESSURE_TICK_MS=20`
+  is OEM-correct. **Note for importing any OEM numbers:** times are in 20 ms ticks; all values are
+  **unsigned** with a **−50 °C temp offset** (0 = −50 °C).
+- **Generalized cals + adaptation beats chasing the exact blob.** The OEM is a full Simulink-generated
+  *mathematical model of the gearbox* — change car weight or a clutch pack and the whole calibration
+  model must change; that's why one EGS doesn't fit all cars. rnd-ash **generalizes values while
+  reversing them** and "some people report that's helped quite a bit." → Our physics-reasoned seeds +
+  adaptation is the **same pragmatic path he uses** — we are not doing it wrong by not having the blob.
+- **Per-cycle SPC/MPC pressure/current command** at the end of each shift cycle → matches our
+  per-tick SPC/MPC computation in `runShiftPhases`.
+
+### 🆕 Concrete refinements (added to backlog)
+- **Two-stage pre-fill (BL-15).** OEM fills the applying clutch in **two ramps — high pressure then
+  low pressure — *before* the clutch starts moving on**, then engages. Ours is single `_fill_p` for
+  `_fill_t_ms`. A high burst (seat piston fast) → low settle (avoid slam) → apply is a real
+  shift-quality win. Bench-gated.
+- **Signal-validity → safe substitution (BL-16).** OEM marks a lost signal invalid → after a timeout
+  *substituted* → injects a **safe default** (e.g. pedal % → 25% if unavailable). Port the *pattern*
+  to our sensors: implausible TPS/MAP/speed ⇒ substitute a moderate safe value, not garbage. Extends
+  the BL-1 trust flag into a general input-plausibility layer.
+
+### ⚠️ Tuning note (no code)
+- **Expect to special-case 5→4 and 3→4.** The OEM has explicit **5→4 patch cases** in the fill
+  high-time function (generalized cases under-performed), and our field notes flag **3→4 as the weak
+  shift** ([[ofgear-722-6-field-notes]]). So both 5-4 and 3-4 are known-problem shifts — plan to hand-tune
+  their fill/overlap rather than rely on the generic profile.
+
+### 🚫 N/A (OEM-internal)
+- SCN coding / 10 calibration pools / EPROM blocks / runtime-stat histograms / Ghidra / C166 quirks.
+  (The variant-pool concept ≈ our `trans_variant`; the oil-temp histogram ≈ a possible minor logging
+  feature, folds into BL-14.)
