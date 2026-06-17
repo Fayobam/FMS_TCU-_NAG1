@@ -67,3 +67,54 @@ locked, so N2 ≈ N3 ≈ I**; in 1/5 the front sun is held (N3 = 0, I = N2·K).
 - [ ] (After bench-verifying cl_speed) lower `CLUTCH_MOVE_RPM`→~20–25; swap `n3`→`turbine_rpm` in the
       equations; add negative-clutch-speed flare detection.
 - [ ] Keep `cl_speed_transitions` OFF until bench-verified.
+
+---
+
+## Video 2 (processed) — Progress overview [chronologically the EARLIER video]
+Covers: hydraulic shift mechanism, current-based pressure control, egs51/analog-shifter support.
+
+### ✅✅ RESOLVES the code-review's #1 blocker — the gear-latch model is CONFIRMED
+He spells out the 722.6 shift hydraulics: there is **no direct link between any solenoid and a
+clutch pack**. A shift solenoid brings one of the 3 **shift groups** online (Y3 → B1/K1 = 1↔2 & 4↔5,
+etc.). Sequence: **bleed → fill → overlap → max-pressure**, then **"the shift solenoid DEACTIVATES
+and the command valve switches control of the new clutches to the MAIN PRESSURE RAIL."**
+→ The gear is **held hydraulically by line pressure (MPC) via the command/latch valve, NOT by a held
+shift solenoid.** This is exactly our **pulse-and-release** model: `beginShift()` fires the routing
+solenoid, `finishShift()` turns it OFF, gear latches. **The gear-trace agent's "OEM holds solenoids
+per-gear" premise was wrong** — our model is authority-confirmed. (Still worth one bench sanity check,
+but no longer a design risk.) Also confirms sequential-only shifting = our ±1 design.
+
+**Corollary:** because the held gear rides on the **main rail (MPC)**, our `HOLDING_PRESSURE_MAP` /
+line-pressure cal is **gear-holding-critical**, not just shift-feel — MPC too low ⇒ a settled gear
+can slip. Reinforces "don't run line pressure low."
+
+### ✅ Confirms our direction (no change needed)
+- **4 pressure phases** (bleed/fill/overlap/max) map onto our PREP→FILL→TORQUE/INERTIA→LOCK. Our PREP
+  `setSPC(0)` = his bleed; overlap = MPC relaxes while SPC rises (our `applyShiftMPC` + SPC ramp).
+- **Per-torque, per-variant (small/large NAG) working pressures** = our `cl_pressure` model direction.
+- **Torque reduction during shift** ("ask the engine to reduce power") = our torque-cut GPIO (he does
+  it over CAN with amplitude; ours is on/off — principle same).
+- **Flare cause = worn overlap valve** leaking MPC → off-clutch released too early → momentary neutral.
+  Mechanical, but validates our flare→more-fill adaptation as the right compensation.
+- **egs51 / W210 analog shifter + TRRS** is the parallel (non-CAN) selector path — i.e. our **4-bit
+  shifter** approach is the correct one for a standalone. He reverse-engineered the same signal set
+  (shifter, pedal, kickdown, reverse/park solenoid, profile switch, starter-lockout). Validation.
+- **We're AHEAD on safety:** the features he lists as still-TODO (N→D at speed, overspeed handling,
+  limp engage) we already have. Our safety layer is a genuine strength.
+
+### 🚫 Current-based pressure control — the big thing that does NOT port (we have no current sensing)
+His core method: **pressure is derived from solenoid CURRENT, not duty cycle.** He runs a
+**constant-current driver** (adjusts PWM every 5 ms to hold a target current via shunt-resistor
+readings, i2s peripheral reading all 6 solenoids @600 kHz), uses the **OEM EGS52 pressure-vs-current
+table**, and closes the loop (armature position ⇒ current draw ⇒ real-time pressure feedback).
+**We have none of this.** Implications for us:
+- Our **open-loop duty→pressure drifts with battery voltage and coil temperature** — exactly what his
+  constant-current loop compensates. This is a real accuracy limitation to design around.
+- Partial mitigation if we can sense **VIN**: feed-forward duty compensation for battery voltage
+  (hold pressure roughly constant vs supply). See BL-13. (Coil-temp drift stays uncompensated.)
+- The OEM pressure-vs-current table isn't directly usable without current sensing (we'd need
+  pressure-vs-duty at nominal V/temp). Our substitute remains **clutch-speed feedback** for adaptation.
+
+### Action items (added to backlog)
+- [ ] BL-13: battery-voltage feed-forward on pressure-solenoid duty (needs a VIN sense — HW check).
+- [ ] Mark the gear-latch concern RESOLVED in the backlog / review verdict.
