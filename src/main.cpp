@@ -97,8 +97,8 @@ void core1PhysicsTask(void *pvParameters) {
 // ============================================================================
 void core0DashboardTask(void *pvParameters) {
     while (true) {
-        webManager.broadcastTelemetry();
-        dtcManager.processFlush();   // persist DTC counts to NVS (throttled)
-        vTaskDelay(pdMS_TO_TICKS(10));
+        webManager.broadcastTelemetry();   // self-gated to ~60Hz internally
+        dtcManager.processFlush();          // persist DTC counts to NVS (throttled)
+        vTaskDelay(pdMS_TO_TICKS(5));       // 200Hz service loop; broadcast gate sets the real rate
     }
 }

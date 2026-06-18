@@ -7,6 +7,12 @@
 #include "EngineProfile.h"
 #include "DtcManager.h"
 
+// Telemetry broadcast period. Core 0 only — fully decoupled from the 1 kHz shift
+// physics on Core 1 — so this is bounded by WiFi/client, not by gear shifting. The
+// back-pressure-aware send keeps a slow client from overflowing (it skips a frame),
+// so ~60 Hz is safe and feeds high-refresh phone screens nicely.
+static const uint32_t TELEMETRY_INTERVAL_MS = 16;
+
 WebManager::WebManager() : server(80), ws("/ws") {
     _last_broadcast_time = 0;
     _adaptives = nullptr;
@@ -224,19 +230,20 @@ static void readStatusString(const volatile uint8_t &seq, const char *src, char 
 }
 
 void WebManager::broadcastTelemetry() {
-    // ~33 Hz (30 ms gate). The live gauges and the 6 s rolling chart are perfectly
-    // smooth at this rate, and it cuts WebSocket queue pressure ~3× vs the old 100 Hz
-    // flood — high-rate telemetry was what overflowed a slow client's TX queue. The
-    // high-fidelity per-shift data goes out separately as the columnar shift_trace.
-    if (millis() - _last_broadcast_time >= 30) {
-        buildAndSendTelemetryJSON();
+    // ~60 Hz. Back-pressure (the canSend() check in buildAndSendTelemetryJSON) is what
+    // makes the higher rate safe — the old 100 Hz flood overflowed slow clients because
+    // there was NO back-pressure; now a backed-up client just skips a frame. The 6 s
+    // chart redraws on requestAnimationFrame, so it's already smooth at the screen's
+    // full refresh; this just feeds it denser points + snappier gauges.
+    if (millis() - _last_broadcast_time >= TELEMETRY_INTERVAL_MS) {
         _last_broadcast_time = millis();
+        buildAndSendTelemetryJSON();
         // Persist adaptation on Core 0 (NVS can block 1-10ms). Flushes on a 60s timer
         // or when a P/N-entry/web edit forced it — not per shift (NVS wear).
         if (_adaptives) _adaptives->processFlush();
+        ws.cleanupClients();
     }
     sendShiftTrace();     // one-shot when a shift trace is ready (not rate-gated)
-    ws.cleanupClients();
 }
 
 // Serialize the high-rate per-shift datalog (captured by Core 1) and push it to the

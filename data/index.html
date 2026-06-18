@@ -283,7 +283,9 @@
                     <span><span style="color:var(--purple);">&#9632;</span> SPC</span>
                     <span><span style="color:var(--orange);">&#9632;</span> TPS</span>
                     <span><span style="color:#e2e8f0;">&#9632;</span> Ratio</span>
-                    <span><span style="color:var(--emerald);">&#9632;</span> Eng/Turb</span>
+                    <span><span style="color:#34d399;">&#9632;</span> On-Clutch</span>
+                    <span><span style="color:#fb7185;">&#9632;</span> Off-Clutch</span>
+                    <span><span style="color:var(--cyan);">&#9632;</span> Eng/Turb</span>
                 </div>
             </div>
             <div style="display:flex; gap:0.6rem; align-items:center;">
@@ -761,6 +763,7 @@
         const TPS = new Float32Array(N), RAT = new Float32Array(N);
         const ENG = new Uint16Array(N),  TRB = new Uint16Array(N);
         const GER = new Uint8Array(N),   PHS = new Uint8Array(N);
+        const ONC = new Int16Array(N),   OFC = new Int16Array(N);
         let head = 0, cnt = 0;
 
         function push(d) {
@@ -768,6 +771,7 @@
             TPS[head]=d.tps||0; RAT[head]=d.ratio||0;
             ENG[head]=d.engRpm|0; TRB[head]=d.turbRpm|0;
             GER[head]=d.gear|0; PHS[head]=d.phase|0;
+            ONC[head]=d.onClutch|0; OFC[head]=d.offClutch|0;
             head=(head+1)%N; if(cnt<N)cnt++;
         }
         function at(j){return(head-cnt+j+N)%N;}
@@ -780,7 +784,7 @@
             'rgba(250,204,21,.20)','rgba(148,163,184,.07)'];
         const PBADGE=[null,'#94a3b8','#22d3ee','#c084fc','#fb923c','#34d399','#fb7185','#facc15','#94a3b8'];
 
-        const CY='#22d3ee', PU='#c084fc', OR='#fb923c', EM='#34d399';
+        const CY='#22d3ee', PU='#c084fc', OR='#fb923c', EM='#34d399', RS='#fb7185';
         const WT='#e2e8f0', SL='rgba(100,116,139,.65)', GR='rgba(255,255,255,.05)';
 
         const canvas = document.getElementById('shift-canvas');
@@ -823,10 +827,13 @@
         function panel(cfg) {
             if(cnt<2)return;
             const {y,h,title,ymax,yunit,series}=cfg;
+            const ymin=cfg.ymin||0;
             const PL=6,PR=50,PT=20,PB=20;
             const px=PL, py=y+PT, pw=cssW-PL-PR, ph=h-PT-PB;
             if(pw<=0||ph<=0)return;
             const tnow=T[at(cnt-1)];
+            // map a value to a y-pixel within [ymin .. sc], clamped
+            const yOf=(v,sc)=>{ let f=(v-ymin)/(sc-ymin); f=f<0?0:f>1?1:f; return py+ph*(1-f); };
 
             // Panel background
             ctx.fillStyle='rgba(15,23,42,.55)';
@@ -856,9 +863,11 @@
             ctx.strokeStyle=GR; ctx.lineWidth=.5; ctx.setLineDash([]);
             ctx.fillStyle=SL; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='left';
             for(let g=0;g<=4;g++){
-                const v=ymax*g/4, gy=py+ph*(1-g/4);
+                const v=ymin+(ymax-ymin)*g/4, gy=py+ph*(1-g/4);
+                ctx.strokeStyle=(ymin<0&&Math.abs(v)<1e-6)?'rgba(255,255,255,.16)':GR;  // emphasise the zero line
                 ctx.beginPath(); ctx.moveTo(px,gy); ctx.lineTo(px+pw,gy); ctx.stroke();
-                const lbl=v>=1000?(v/1000).toFixed(1)+'k':Number.isInteger(v)?v.toFixed(0):v.toFixed(1);
+                const av=Math.abs(v);
+                const lbl=av>=1000?(v/1000).toFixed(1)+'k':Number.isInteger(v)?v.toFixed(0):v.toFixed(1);
                 ctx.fillText(lbl,cssW-PR+4,gy+4);
             }
             ctx.fillStyle='rgba(100,116,139,.35)'; ctx.font='9px ui-monospace,monospace';
@@ -891,6 +900,7 @@
             const usedY={};
             for(const s of series){
                 const sc=s.scale||ymax;
+                ctx.lineJoin='round';
                 ctx.strokeStyle=s.color; ctx.lineWidth=s.lw||1.5;
                 if(s.dash)ctx.setLineDash([5,5]); else ctx.setLineDash([]);
                 ctx.beginPath();
@@ -898,7 +908,7 @@
                 for(let i=0;i<cnt;i++){
                     const si=at(i),sx=xOf(T[si],tnow,px,pw);
                     if(sx<0)continue;
-                    const sy=py+ph*(1-Math.min(s.arr[si]/sc,1));
+                    const sy=yOf(s.arr[si],sc);
                     if(first){ctx.moveTo(sx,sy);first=false;}else ctx.lineTo(sx,sy);
                 }
                 ctx.stroke(); ctx.setLineDash([]);
@@ -906,13 +916,14 @@
                 if(!first){
                     const li=at(cnt-1);
                     const lx=xOf(T[li],tnow,px,pw);
-                    const ly=py+ph*(1-Math.min(s.arr[li]/sc,1));
-                    // dot
-                    ctx.beginPath(); ctx.arc(lx,ly,3.5,0,6.28);
-                    ctx.fillStyle=s.color; ctx.fill();
+                    const ly=yOf(s.arr[li],sc);
+                    // glowing live dot
+                    ctx.save(); ctx.shadowColor=s.color; ctx.shadowBlur=9;
+                    ctx.beginPath(); ctx.arc(lx,ly,3.6,0,6.28);
+                    ctx.fillStyle=s.color; ctx.fill(); ctx.restore();
                     // live value label (nudge if overlapping)
-                    const raw=s.arr[li];
-                    const lbl=raw>=1000?(raw/1000).toFixed(1)+'k':raw<10?raw.toFixed(2):raw.toFixed(1);
+                    const raw=s.arr[li], araw=Math.abs(raw);
+                    const lbl=araw>=1000?(raw/1000).toFixed(1)+'k':araw<10?raw.toFixed(2):Math.round(raw).toString();
                     let ly2=Math.round(ly+4);
                     while(Object.values(usedY).some(prev=>Math.abs(prev-ly2)<11))ly2+=11;
                     usedY[s.color]=ly2;
@@ -961,21 +972,27 @@
             ctx.clearRect(0,0,cssW,cssH);
 
             const GAP=6;
-            const h1=Math.round(cssH*.40);
-            const h2=Math.round(cssH*.31);
-            const h3=cssH-h1-h2-GAP*2;
+            const h1=Math.round(cssH*.27);   // pressures
+            const h2=Math.round(cssH*.18);   // ratio
+            const h3=Math.round(cssH*.27);   // clutch slip
+            const h4=cssH-h1-h2-h3-GAP*3;    // rpm (time axis)
 
-            panel({ y:0,          h:h1, title:'PRESSURES',            ymax:100,  yunit:'%',
+            panel({ y:0,            h:h1, title:'PRESSURES',            ymax:100,  yunit:'%',
                 series:[
                     {arr:MPC,color:CY, lw:1.5},
                     {arr:SPC,color:PU, lw:2.0},
                     {arr:TPS,color:OR, lw:1.0, dash:true},
                 ]});
-            panel({ y:h1+GAP,     h:h2, title:'GEAR RATIO',           ymax:4.5,  yunit:'ratio',
+            panel({ y:h1+GAP,       h:h2, title:'GEAR RATIO',           ymax:4.5,  yunit:'ratio',
                 series:[
                     {arr:RAT,color:WT, lw:2.5, scale:4.5},
                 ]});
-            panel({ y:h1+h2+GAP*2,h:h3, title:'ENGINE & TURBINE RPM', ymax:7000, yunit:'RPM',
+            panel({ y:h1+h2+GAP*2,  h:h3, title:'CLUTCH SLIP (− = flare)', ymin:-1000, ymax:3000, yunit:'RPM',
+                series:[
+                    {arr:OFC,color:RS, lw:1.6, scale:3000},   // off-going (rises during fill)
+                    {arr:ONC,color:EM, lw:1.6, scale:3000},   // on-coming (→0 at sync)
+                ]});
+            panel({ y:h1+h2+h3+GAP*3,h:h4, title:'ENGINE & TURBINE RPM', ymax:7000, yunit:'RPM',
                 timeAxis:true,
                 series:[
                     {arr:ENG,color:CY, lw:1.5, scale:7000},
