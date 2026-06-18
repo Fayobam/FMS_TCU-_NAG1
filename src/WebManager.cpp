@@ -323,7 +323,7 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["tpsOk"]     = telemetry.tps_valid;
     doc["mapOk"]     = telemetry.map_valid;
 
-    char buffer[1280];
+    char buffer[1536];
     size_t len = serializeJson(doc, buffer, sizeof(buffer));
     if (len >= sizeof(buffer) - 1) Serial.println("WARNING: Telemetry JSON truncated — increase buffer!");
 
