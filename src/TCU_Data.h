@@ -224,6 +224,41 @@ const bool  ENABLE_TORQUE_CUT     = false;
 const float TORQUE_CUT_MIN_LOAD   = 50.0f;   // only on power upshifts above this % load
 
 // ============================================================================
+// DRIVE MODES — selected by the forward lever position (D/4/3/2/1).
+// Each position is a bundle of behaviour knobs; down the gate = sharper. Reorder
+// or retune freely here — it is the single source of truth for the gate behaviour.
+// Overrev + money-shift guards are ALWAYS active; paddles ALWAYS override.
+// ============================================================================
+struct DriveMode {
+    const char* name;
+    bool   auto_shift;     // AUTO_SHIFT_MAP schedule + coast/kickdown run (else paddle-only)
+    float  shift_pt_scale; // ×auto schedule speed (up & down): <1 early/economy, >1 hold gears
+    float  firmness;       // ×apply/inertia/catch authority: 1.0 = baseline (gentle), higher = firmer
+    float  tcc_open_tps;   // TPS% above which TCC is forced open (lower = sportier / more slip)
+    bool   lug_guard;      // auto lug-protection downshift active
+    bool   torque_cut;     // request shift torque-cut (still gated by ENABLE_TORQUE_CUT hardware)
+};
+
+// Index 0..4 = lever D, 4, 3, 2, 1.
+const DriveMode DRIVE_MODES[5] = {
+  // name            auto   shiftpt firm   tccTps lug    tqcut
+  { "COMFORT AUTO",  true,  0.85f,  1.00f, 60.0f, true,  false }, // D
+  { "STANDARD AUTO", true,  1.00f,  1.05f, 45.0f, true,  false }, // 4
+  { "SPORT AUTO",    true,  1.20f,  1.15f, 30.0f, true,  false }, // 3
+  { "SPORT MANUAL",  false, 1.00f,  1.20f, 30.0f, true,  false }, // 2
+  { "RACE MANUAL",   false, 1.00f,  1.35f, 25.0f, false, true  }, // 1
+};
+
+// Forward lever char → DRIVE_MODES index. Non-forward (P/R/N) returns 0 (harmless;
+// auto/lug/etc. are separately gated on isForwardRange()).
+inline uint8_t driveModeIndex(char prnd) {
+    switch (prnd) {
+        case 'D': return 0; case '4': return 1; case '3': return 2;
+        case '2': return 3; case '1': return 4; default: return 0;
+    }
+}
+
+// ============================================================================
 // 4. TELEMETRY DATA STRUCTURE (V9.0)
 // ============================================================================
 struct TCU_Telemetry {
@@ -250,6 +285,7 @@ struct TCU_Telemetry {
     uint8_t current_gear = 1;
     uint8_t target_gear  = 1;
     char prnd_state      = 'P';
+    uint8_t drive_mode   = 0;     // DRIVE_MODES index for the current forward lever position
 
     // --- Limp Mode & Safety ---
     bool is_limp_mode      = false;

@@ -51,6 +51,12 @@ bool ShiftScheduler::isForwardRange() {
     return (s == 'D' || s == '4' || s == '3' || s == '2' || s == '1');
 }
 
+// Lever-selected drive mode (D/4/3/2/1 → COMFORT AUTO … RACE MANUAL). Read live each
+// use so moving the lever re-tunes shift behaviour on the fly.
+const DriveMode& ShiftScheduler::currentMode() const {
+    return DRIVE_MODES[driveModeIndex(telemetry.prnd_state)];
+}
+
 // ----------------------------------------------------------------------------
 float ShiftScheduler::getTargetRatio(uint8_t gear) {
     switch(gear) {
@@ -177,7 +183,7 @@ void ShiftScheduler::updateTCC(bool ptick) {
         // faster than MAP settling.
         bool force_open = _high_torque_mode ||
                           telemetry.map_kpa > 105.0f ||
-                          telemetry.tps_pct > 45.0f;
+                          telemetry.tps_pct > currentMode().tcc_open_tps;  // sportier modes open sooner
         if (force_open) {
             telemetry.tcc_target_slip_rpm = 500.0f;
             if (ptick) current_tcc_pwm -= TCC_RELEASE_STEP;
@@ -379,6 +385,17 @@ void ShiftScheduler::classifyAndProfile(uint8_t from, uint8_t to, bool is_upshif
         _release_backstop_ms = (uint16_t)constrain((int)_release_backstop_ms + cell.fill_t_cycles * 20, 40, 600);
     }
 
+    // Drive-mode firmness: scale the apply/clamp authority (NOT fill — that just seats the
+    // piston). 1.0 = baseline gentle; sport/race scale up for firmer, faster shifts.
+    float firm = currentMode().firmness;
+    if (is_upshift) {
+        _apply_pct     = (uint8_t)constrain((int)(_apply_pct * firm + 0.5f), 0, 100);
+        _inertia_slope = _inertia_slope * firm;
+    } else {
+        _catch_start_spc = (uint8_t)constrain((int)(_catch_start_spc * firm + 0.5f), 0, 100);
+        _catch_slope     = _catch_slope * firm;
+    }
+
     telemetry.shift_class = (uint8_t)_sclass;
     telemetry.pd_type     = (uint8_t)_pd_type;
 }
@@ -418,7 +435,8 @@ void ShiftScheduler::checkSafetyShifts() {
     // Classic case: driver forgot to downshift from 5th at a traffic light.
     // Floor is 2nd — the hydraulic default — so 1st remains driver's choice.
     // The floor also means this never fires after a D-engagement (which starts in 2nd).
-    if (telemetry.engine_rpm < engineProfile.lugRpm() &&
+    if (currentMode().lug_guard &&
+        telemetry.engine_rpm < engineProfile.lugRpm() &&
         telemetry.tps_pct > TPS_LUG_LOAD_PCT &&
         telemetry.current_gear > 2) {
         if (beginShift(telemetry.current_gear - 1, false, "LUG")) {
@@ -439,6 +457,7 @@ void ShiftScheduler::checkSafetyShifts() {
 void ShiftScheduler::checkCoastDownSchedule() {
     if (_current_phase != PHASE_CRUISING) return;
     if (!isForwardRange()) return;
+    if (!currentMode().auto_shift) return;   // manual modes (2/1): the driver downshifts
     if (telemetry.paddle_up_request || telemetry.paddle_down_request) return;
     if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
     if (telemetry.tps_pct >= CLASS_COAST_TPS_PCT) return;     // coast only (closed throttle)
@@ -462,6 +481,7 @@ void ShiftScheduler::checkCoastDownSchedule() {
 void ShiftScheduler::checkKickdown() {
     if (_current_phase != PHASE_CRUISING) return;
     if (!isForwardRange()) return;
+    if (!currentMode().auto_shift) return;   // manual modes: the driver paddles for power
     if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
     if (telemetry.tps_pct < KICKDOWN_TPS_PCT) return;
     if (telemetry.engine_rpm > KICKDOWN_MAX_ENG_RPM) return;  // already high → don't overrev
@@ -689,6 +709,7 @@ void ShiftScheduler::update() {
         return;
     }
 
+    telemetry.drive_mode = driveModeIndex(telemetry.prnd_state);
     checkTpsROC();
     telemetry.shift_phase = (uint8_t)_current_phase;
     calculateLiveRatio();
@@ -840,6 +861,7 @@ void ShiftScheduler::update() {
     // need a CAN torque request (out of scope). Still high-load power-upshift only.
     bool tq_cut = (_sclass == SC_POWER_UP) &&
                   (_load_at_start > TORQUE_CUT_MIN_LOAD) &&
+                  currentMode().torque_cut &&     // only modes that request it (RACE)
                   (_current_phase == PHASE_TORQUE || _current_phase == PHASE_INERTIA);
     telemetry.torque_cut_active = tq_cut && ENABLE_TORQUE_CUT;
     _solenoids->setTorqueCut(tq_cut);
