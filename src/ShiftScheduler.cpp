@@ -1122,6 +1122,9 @@ uint8_t ShiftScheduler::classGearFromRatio() {
 
 // Class-indexed adaptation (Adaptation v2). One update per shift, ATF-gated.
 void ShiftScheduler::evaluateAdaptation() {
+    // Don't let the deliberately-firm manual modes (SPORT/RACE firmness >1) poison the
+    // learned trims that the gentler auto modes also use — only learn in auto modes.
+    if (!currentMode().auto_shift) return;
     // ATSG p.78: only relearn in the valid ATF window (and never in limp).
     if (telemetry.atf_temp_c < ADAPT_ATF_MIN_C || telemetry.atf_temp_c > ADAPT_ATF_MAX_C) return;
     _adaptives->learn((uint8_t)_sclass, _active_shift_idx, _torque_bin,
