@@ -105,6 +105,7 @@ void SpeedReader::begin() {
         mcpwm_capture_timer_start(_cap_timer_g1);
     }
 
+    telemetry.speed_hw_ok = _hw_ok;   // surface to DTC store / dashboard
     if (!_hw_ok) {
         Serial.println("!!! SpeedReader: MCPWM capture init FAILED — speed sensing DISABLED. "
                        "Shifts run on time backstops; ratio/limp checks inert. Check pins/wiring.");

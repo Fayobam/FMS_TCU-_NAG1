@@ -238,6 +238,7 @@ struct TCU_Telemetry {
     float off_clutch_rpm = 0.0f;    // off-going clutch slip during a shift (0 when not shifting)
     uint32_t speed_sample_seq = 0;   // ++ when a NEW edge advances a ratio channel (N2/N3/OUT);
                                      // lets the 1 kHz phase engine gate ratio-derivative checks (B-4)
+    bool speed_hw_ok = true;         // MCPWM capture init OK (false = speed sensing disabled)
 
     // --- Engine Load ---
     float tps_pct = 0.0f;
@@ -256,6 +257,7 @@ struct TCU_Telemetry {
     bool is_slipping       = false;
     unsigned long slip_start_time_ms = 0;
     bool input_speed_trusted = true;   // N2/N3 plausible (locked in 2/3/4); false = bad speed sensor (BL-1)
+    uint8_t dtc_active_count = 0;       // number of currently-active DTCs (DtcManager owns)
     // Status strings are fixed buffers (NOT Arduino String) because Core 1 writes
     // them while Core 0 reads them in the telemetry JSON. A heap-backed String can
     // realloc mid-read and corrupt the heap across cores. The seq counter is a

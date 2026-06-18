@@ -15,6 +15,7 @@
 #include "AdaptiveMemory.h"
 #include "ShiftScheduler.h"
 #include "WebManager.h"
+#include "DtcManager.h"
 
 // ============================================================================
 // 1. GLOBAL OBJECTS
@@ -48,6 +49,7 @@ void setup() {
     speedReader.begin();
     inputManager.begin();
     adaptives.begin();
+    dtcManager.begin();
     shiftScheduler.begin();
 
     webManager.setAdaptiveMemory(&adaptives);
@@ -67,14 +69,25 @@ void loop() {
 void core1PhysicsTask(void *pvParameters) {
     const TickType_t xFrequency = 1;
     TickType_t xLastWakeTime = xTaskGetTickCount();
+    unsigned long lastOverrunLog = 0;
 
     while (true) {
+        uint32_t t0 = micros();
+
         inputManager.update();     // PRND + paddles + one ADC channel (round-robin)
         speedReader.update();      // period-capture readout, self-gated to 200Hz
 
         shiftScheduler.update();   // owns standby/garage Y4 windowing now (ATSG-correct)
 
         solenoids.update();
+        dtcManager.poll();         // edge the fault flags into the DTC store
+
+        // Loop-overrun watchdog: the 1 kHz budget is 1000us. If the work block runs
+        // long it silently stretches every shift phase's wall-clock — log it (rate-limited).
+        if ((micros() - t0) > 1500 && (millis() - lastOverrunLog) > 1000) {
+            dtcManager.trip(DTC_LOOP_OVERRUN);
+            lastOverrunLog = millis();
+        }
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
@@ -85,6 +98,7 @@ void core1PhysicsTask(void *pvParameters) {
 void core0DashboardTask(void *pvParameters) {
     while (true) {
         webManager.broadcastTelemetry();
+        dtcManager.processFlush();   // persist DTC counts to NVS (throttled)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

@@ -6,6 +6,7 @@
 // ============================================================================
 #include "ShiftScheduler.h"
 #include "EngineProfile.h"
+#include "DtcManager.h"
 
 ShiftScheduler::ShiftScheduler(SolenoidDriver* solenoids, AdaptiveMemory* adaptives) {
     _solenoids = solenoids;
@@ -403,6 +404,7 @@ void ShiftScheduler::checkSafetyShifts() {
     if (telemetry.engine_rpm + lead_rpm > engineProfile.overrevRpm() && telemetry.current_gear < 5) {
         if (beginShift(telemetry.current_gear + 1, true, "OVERREV")) {
             telemetry.last_auto_shift_ms = millis();
+            dtcManager.trip(DTC_OVERREV);
             char buf[64];
             snprintf(buf, sizeof(buf), "AUTO UPSHIFT (overrev %d +%d/s)",
                      (int)telemetry.engine_rpm, (int)_eng_rpm_per_s);

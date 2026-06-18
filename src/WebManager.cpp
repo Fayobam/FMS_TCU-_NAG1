@@ -5,6 +5,7 @@
 // ============================================================================
 #include "WebManager.h"
 #include "EngineProfile.h"
+#include "DtcManager.h"
 
 WebManager::WebManager() : server(80), ws("/ws") {
     _last_broadcast_time = 0;
@@ -48,6 +49,30 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     if (cmd == "limp_reset") {
         telemetry.limp_reset_request = true;   // honoured only when stopped & in P/N
         Serial.println("Limp reset requested via web.");
+        return;
+    }
+
+    // --- Diagnostic trouble codes ---
+    if (cmd == "get_dtcs") {
+        JsonDocument resp;
+        resp["type"] = "dtc_data";
+        JsonArray arr = resp["dtcs"].to<JsonArray>();
+        for (uint8_t i = 0; i < DTC_COUNT; i++) {
+            JsonObject o = arr.add<JsonObject>();
+            o["code"]   = i;
+            o["name"]   = dtcName(i);
+            o["count"]  = dtcManager.count(i);
+            o["active"] = dtcManager.active(i);
+            o["lastMs"] = dtcManager.lastMs(i);
+        }
+        char buffer[1024];
+        size_t n = serializeJson(resp, buffer, sizeof(buffer));
+        ws.textAll(buffer, n);
+        return;
+    }
+    if (cmd == "clear_dtcs") {
+        dtcManager.clearAll();
+        Serial.println("DTCs cleared via web.");
         return;
     }
 
@@ -286,7 +311,14 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["tInput"]    = (int)telemetry.t_input_nm;      // input/turbine torque (engine × converter factor)
     doc["tqCut"]     = telemetry.torque_cut_active;     // rusEFI shift-retard window asserted
 
-    char buffer[1024];
+    // Health / fault flags for the dashboard warning panel.
+    doc["dtcN"]      = telemetry.dtc_active_count;
+    doc["spdHwOk"]   = telemetry.speed_hw_ok;
+    doc["inTrust"]   = telemetry.input_speed_trusted;
+    doc["tpsOk"]     = telemetry.tps_valid;
+    doc["mapOk"]     = telemetry.map_valid;
+
+    char buffer[1280];
     size_t len = serializeJson(doc, buffer, sizeof(buffer));
     if (len >= sizeof(buffer) - 1) Serial.println("WARNING: Telemetry JSON truncated — increase buffer!");
 
