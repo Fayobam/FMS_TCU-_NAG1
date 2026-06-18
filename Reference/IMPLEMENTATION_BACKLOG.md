@@ -16,7 +16,7 @@ Risk: how much it touches load-bearing/boot/control paths.
 | BL-4 | **RP_LOCK default OFF for first drive** — `ENABLE_RP_LOCK=false` (V23) + polarity CONFIRMED by owner (HIGH=lock) | review | trivial | ✅ |
 | BL-5 | **cl_spc first-drive default** — `cl_spc_enable=0` (pure feedforward); EP_MAGIC bumped NAG9→NAGA to re-seed | review | low | ✅ |
 | BL-13 | **Battery-voltage feed-forward** on pressure-solenoid duty — we have no current sensing, so open-loop duty→pressure drifts with VIN/coil-temp; compensate duty for measured VIN if a VIN sense exists | rnd-ash V2 | med | 🟡 (needs VIN sense) |
-| BL-14 | **Structured DTC logging** for faults (sensor/overspeed/limp reasons) — rnd-ash lists it as TODO; we have limp but no DTC store | rnd-ash V2 | low | 🔵 |
+| BL-14 | **Structured DTC logging** — DtcManager (NVS), 8 codes, web get/clear, telemetry health flags | rnd-ash V2 | low | ✅ |
 
 ## B. Clutch-speed & shift quality (rnd-ash) — all gated on bench-verifying the clutch-speed model first
 | ID | Item | Source | Risk | Status |
@@ -33,7 +33,7 @@ Risk: how much it touches load-bearing/boot/control paths.
 ## C. Auto mode
 | ID | Item | Source | Risk | Status |
 |----|------|--------|------|--------|
-| BL-12 | **Full auto upshift/downshift** from `Reference/AUTO_SHIFT_MAP.md` (needs per-car km/h↔output_rpm constant K); paddle still overrides | auto-shift sheet | high | ⏸ (post first-drive) |
+| BL-12 | **Full auto upshift/downshift** + **drive-mode gate** (D/4/3 auto, 2/1 manual; lever=mode). Needs per-car `kmh_per_outrpm` set on the dashboard before relying on auto | auto-shift sheet | high | ✅ (bench-tune) |
 
 ## D. Done (traceability)
 | Item | Commit |
@@ -45,6 +45,9 @@ Risk: how much it touches load-bearing/boot/control paths.
 | BL-1 input-shaft trust flag (N2/N3 mismatch in 2/3/4 → suppress limp) | this batch |
 | BL-16 TPS/MAP rail → safe-default substitution + valid flags | this batch |
 | BL-2 / BL-3 (output-independent downshift guard / MCPWM fail-soft) | already in V23 (3d35d29) |
+| BL-14 DTC logging (DtcManager + web + health flags) | 7bfa179 |
+| BL-12 drive-mode gate (lever D/4/3/2/1 = modes) | f6b40c7 |
+| BL-12 auto-shift schedule (AutoShiftMap + road km/h) | b695f8e |
 
 ---
 *Detailed reasoning lives in `UN52_RND_ASH_INSIGHTS.md` (per-video) and the code-review verdict.
