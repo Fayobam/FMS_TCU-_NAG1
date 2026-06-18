@@ -113,7 +113,8 @@ class ShiftScheduler {
     void computeClutchSpeeds();   // UN52 clutch-speed model: on/off-clutch slip from N2/N3/out
     void updateTCC(bool ptick);
     void checkSafetyShifts();
-    void checkCoastDownSchedule();            // auto downshifts while coasting to a stop
+    void checkCoastDownSchedule();            // auto downshifts while coasting to a stop (superseded by checkAutoShift)
+    void checkAutoShift();                    // full auto up/down schedule (AUTO_SHIFT_MAP × road km/h)
     void checkKickdown();                     // power-down request on hard tip-in
     void checkLimpMode(float target_ratio);
     void checkTpsROC();                       // TPS rate-of-change torque anticipation

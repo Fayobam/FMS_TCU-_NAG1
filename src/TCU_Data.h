@@ -267,6 +267,7 @@ struct TCU_Telemetry {
     float output_rpm  = 0.0f;
     float engine_rpm  = 0.0f;
     float live_ratio  = 0.0f;
+    float road_kmh    = 0.0f;       // output_rpm × kmh_per_outrpm (auto-shift schedule + dash)
     float n2_rpm = 0.0f;            // raw N2 (front carrier) — for the clutch-speed model
     float n3_rpm = 0.0f;            // raw N3 (front sun)
     float on_clutch_rpm = 0.0f;     // on-coming clutch slip during a shift (UN52 clutch-speed model)

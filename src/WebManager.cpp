@@ -91,6 +91,7 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         resp["tmax"] = p->t_max_ref; resp["overrev"] = p->overrev_rpm; resp["lug"] = p->lug_rpm;
         resp["engPpr"] = p->eng_ppr; resp["outPpr"] = p->out_ppr;
         resp["clEn"]   = p->cl_spc_enable; resp["clKp"] = p->cl_spc_kp;
+        resp["kmhRpm"] = p->kmh_per_outrpm;
         resp["transVariant"] = p->trans_variant;   // 0=small NAG, 1=big NAG
         resp["tcStall"] = p->tc_stall_mult_x100; resp["tcCoupSr"] = p->tc_coupling_sr_x100;
         resp["clPwr"] = p->cl_pressure_enable; resp["pFull"] = p->p_full_scale_mbar;
@@ -130,6 +131,7 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         if (doc["outPpr"].is<int>())  p->out_ppr     = (uint16_t)constrain(doc["outPpr"].as<int>(), 1, 240);
         if (doc["clEn"].is<int>())    p->cl_spc_enable = (uint8_t)(doc["clEn"].as<int>() ? 1 : 0);
         if (doc["clKp"].is<int>())    p->cl_spc_kp   = (uint16_t)constrain(doc["clKp"].as<int>(), 0, 1000);
+        if (doc["kmhRpm"].is<float>()) p->kmh_per_outrpm = constrain(doc["kmhRpm"].as<float>(), 0.001f, 1.0f);
         // Transmission variant: ratios + tooth-blend K switch live (g_trans) — no reboot.
         // On an actual CHANGE, load that gearbox's physics clutch-model defaults FIRST, so a
         // dropdown-only change (no clutch arrays sent) lands on the variant presets; a full
@@ -285,6 +287,7 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["spc"]       = telemetry.shift_pressure_pct;
     doc["shiftTime"] = telemetry.last_shift_time_ms;
     doc["ratio"]     = telemetry.live_ratio;
+    doc["kmh"]       = telemetry.road_kmh;
     doc["flare"]     = telemetry.flare_detected;
     doc["bind"]      = telemetry.bind_detected;
 

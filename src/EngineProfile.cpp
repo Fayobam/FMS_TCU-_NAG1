@@ -98,6 +98,7 @@ void EngineProfile::seedDefaults() {
     d.coef_apply_cold  = 185;
     d.coef_apply_hot   = 140;
     d.cl_speed_transitions = 0;      // ratio-based exits by default; clutch-speed (Phase 1b) opt-in
+    d.kmh_per_outrpm  = 0.038f;      // ~190E (3.07 final × 1.94 m tyre) — MEASURE + set per car
     seedClutchModelForVariant(d.trans_variant);   // friction/spring/line per small or big NAG
 
     d.tps_closed_v    = 0.50f;

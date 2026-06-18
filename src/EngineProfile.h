@@ -22,7 +22,7 @@
 
 #define EP_RPM_BINS 8
 #define EP_MAP_BINS 8
-#define EP_MAGIC    0x4E414741u   // 'NAGA' — bump re-seeds NVS to seedDefaults (vA: BL-5 cl_spc default OFF)
+#define EP_MAGIC    0x4E414742u   // 'NAGB' — bump re-seeds NVS to seedDefaults (vB: + kmh_per_outrpm for auto mode)
 
 struct EngineProfileData {
     int16_t  torque[EP_RPM_BINS][EP_MAP_BINS];  // Nm on the RPM×MAP grid
@@ -58,6 +58,7 @@ struct EngineProfileData {
     uint16_t release_spring_mbar[4];            // off-going return-spring preload (mBar)
     uint16_t p_full_scale_mbar;                 // line pressure at 100% command (mBar→% solenoid map)
     uint8_t  cl_speed_transitions;              // 0 = ratio-based phase exits (default), 1 = clutch-speed (Phase 1b)
+    float    kmh_per_outrpm;                    // road km/h per output-shaft rpm (final drive × tyre); auto-mode speed
     uint32_t magic;                             // sanity/version tag
 };
 
@@ -137,6 +138,7 @@ class EngineProfile {
     uint16_t fillT(uint8_t i)   { return d.fill_t[constrain((int)i,0,3)]; }
     bool     clSpcEnable() const { return d.cl_spc_enable != 0; }
     float    clSpcKp()     const { return (float)d.cl_spc_kp; }   // SPC%-trim per unit ratio error
+    float    kmhPerOutRpm() const { return d.kmh_per_outrpm > 0.0001f ? d.kmh_per_outrpm : 0.038f; }
 
     EngineProfileData* raw() { return &d; }            // for the web tuner
 };

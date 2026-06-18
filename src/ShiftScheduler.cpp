@@ -7,6 +7,7 @@
 #include "ShiftScheduler.h"
 #include "EngineProfile.h"
 #include "DtcManager.h"
+#include "AutoShiftMap.h"
 
 ShiftScheduler::ShiftScheduler(SolenoidDriver* solenoids, AdaptiveMemory* adaptives) {
     _solenoids = solenoids;
@@ -474,6 +475,45 @@ void ShiftScheduler::checkCoastDownSchedule() {
 }
 
 // ----------------------------------------------------------------------------
+// AUTO SHIFT SCHEDULE (full automatic up/down). Runs only in auto drive modes
+// (D/4/3). Interpolates the AUTO_SHIFT_MAP km/h thresholds for the current gear by
+// TPS, stretches them by the mode's shift_pt_scale (sport holds gears longer), and
+// shifts when road km/h crosses. Money-shift (beginShift) + overrev/lug
+// (checkSafetyShifts) guards stay on top; AUTO_SHIFT_COOLDOWN_MS + the map's built-in
+// up>down hysteresis prevent hunting. A pending paddle request wins this tick.
+// Supersedes checkCoastDownSchedule (the closed-throttle column IS the coast schedule).
+// ----------------------------------------------------------------------------
+void ShiftScheduler::checkAutoShift() {
+    if (_current_phase != PHASE_CRUISING) return;
+    if (!isForwardRange()) return;
+    if (!currentMode().auto_shift) return;
+    if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
+    if (telemetry.paddle_up_request || telemetry.paddle_down_request) return;   // paddle override wins
+
+    uint8_t g     = telemetry.current_gear;
+    float   kmh   = telemetry.road_kmh;
+    float   tps   = telemetry.tps_pct;
+    float   scale = currentMode().shift_pt_scale;
+
+    // Upshift g→g+1 above the (scaled) threshold. (1st is reachable by paddle in auto.)
+    if (g >= 1 && g < 5) {
+        float up_kmh = autoMapInterp(AUTO_UPSHIFT_KMH[g - 1], tps) * scale;
+        if (kmh > up_kmh && beginShift(g + 1, true, "AUTO")) {
+            telemetry.last_auto_shift_ms = millis();
+            return;
+        }
+    }
+    // Downshift g→g-1 below the (scaled) threshold. Floor at 2nd (1st = paddle-only).
+    if (g >= 3 && g <= 5) {
+        float dn_kmh = autoMapInterp(AUTO_DOWNSHIFT_KMH[g - 2], tps) * scale;
+        if (kmh < dn_kmh && beginShift(g - 1, false, "AUTO")) {
+            telemetry.last_auto_shift_ms = millis();
+            return;
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
 // KICKDOWN (spec §4.6). Hard tip-in → request a power-down if the lower gear keeps
 // predicted turbine under the money-shift ceiling. Multi-gear kickdowns happen as
 // back-to-back single shifts across cooldowns (never skip-shifts).
@@ -740,6 +780,7 @@ void ShiftScheduler::update() {
     // observability and consumed by the Phase 3 pressure model; load_pct/bins stay
     // engine-based for now so the current adaptation mapping is not perturbed pre-Phase 3.
     telemetry.t_input_nm = engineProfile.inputTorque(telemetry.engine_rpm, telemetry.turbine_rpm, telemetry.map_kpa);
+    telemetry.road_kmh   = telemetry.output_rpm * engineProfile.kmhPerOutRpm();   // for auto schedule + dash
 
     // Engine rpm rate (rpm/s, EMA-smoothed over 100ms samples) for predictive overrev.
     if (millis() - _eng_roc_sample_ms >= 100) {
@@ -772,7 +813,7 @@ void ShiftScheduler::update() {
     checkLimpMode(target_ratio);
     checkSafetyShifts();       // auto overrev/lug protection (highest priority)
     checkKickdown();           // power-down on hard tip-in (mutually exclusive w/ coast)
-    checkCoastDownSchedule();  // auto downshift while coasting to a stop
+    checkAutoShift();          // full auto up/down schedule (auto drive modes only)
 
     // 20ms pressure-update quantizer (ATSG p.80). Sensors + exit checks still run at 1kHz.
     bool ptick = (millis() - _last_pressure_update_ms >= PRESSURE_TICK_MS);
