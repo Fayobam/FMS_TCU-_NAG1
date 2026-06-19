@@ -514,6 +514,24 @@ void ShiftScheduler::checkAutoShift() {
 }
 
 // ----------------------------------------------------------------------------
+// LAUNCH GEAR. A stopped 722.6 in D otherwise sits in its hydraulic-default 2nd —
+// lethargic with this car's 3.07 diff. Drop a nearly-stopped car one gear at a time
+// toward its mode's launch gear (1st) so pull-away uses the 3.93 first ratio. Runs
+// in ALL modes (auto and manual both launch in 1st); the auto schedule / paddles take
+// over from 1st as speed builds. Money-shift guard (in beginShift) + cooldown apply.
+// ----------------------------------------------------------------------------
+void ShiftScheduler::checkLaunchGear() {
+    if (_current_phase != PHASE_CRUISING) return;
+    if (!isForwardRange() || !telemetry.drive_engaged) return;
+    if (millis() < _engage_grace_until_ms) return;                  // let garage engagement settle
+    if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
+    uint8_t lg = currentMode().launch_gear;
+    if (telemetry.current_gear > lg && telemetry.output_rpm < LAUNCH_GEAR_MAX_OUTPUT_RPM) {
+        if (beginShift(telemetry.current_gear - 1, false, "LAUNCH")) telemetry.last_auto_shift_ms = millis();
+    }
+}
+
+// ----------------------------------------------------------------------------
 // KICKDOWN (spec §4.6). Hard tip-in → request a power-down if the lower gear keeps
 // predicted turbine under the money-shift ceiling. Multi-gear kickdowns happen as
 // back-to-back single shifts across cooldowns (never skip-shifts).
@@ -814,6 +832,7 @@ void ShiftScheduler::update() {
     checkSafetyShifts();       // auto overrev/lug protection (highest priority)
     checkKickdown();           // power-down on hard tip-in (mutually exclusive w/ coast)
     checkAutoShift();          // full auto up/down schedule (auto drive modes only)
+    checkLaunchGear();         // a stopped car drops to 1st (launch gear) in every mode
 
     // 20ms pressure-update quantizer (ATSG p.80). Sensors + exit checks still run at 1kHz.
     bool ptick = (millis() - _last_pressure_update_ms >= PRESSURE_TICK_MS);
@@ -845,7 +864,7 @@ void ShiftScheduler::update() {
         // does not latch drive_engaged / assert gear 2 (isForwardRange() excludes R).
         if (!telemetry.drive_engaged && isForwardRange()) {
             telemetry.drive_engaged = true;
-            telemetry.current_gear  = 2;     // 722.6 hydraulic default; 1st is paddle-only
+            telemetry.current_gear  = 2;     // engages at hydraulic-default 2nd; checkLaunchGear() drops to 1st when stopped
             telemetry.target_gear   = 2;
             // Engaged while already rolling (N->D at speed, or a reboot mid-drive
             // with the shift valves still hydraulically latched in a higher gear):

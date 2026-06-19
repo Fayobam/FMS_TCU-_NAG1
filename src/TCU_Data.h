@@ -97,6 +97,9 @@ const unsigned long AUTO_SHIFT_COOLDOWN_MS = 500; // Min gap between auto-safety
 // 3.5 final drive + 2 m tyre. Below this the car is treated as stopped, so
 // reverse / park selection is permitted normally.
 const float OUTPUT_RPM_MOVING         = 150.0f;
+// Launch gear: below this output rpm a stopped car drops to its mode's launch gear (1st),
+// so pull-away uses the 3.93 first ratio instead of the 722.6 hydraulic-default 2nd.
+const float LAUNCH_GEAR_MAX_OUTPUT_RPM = 100.0f;   // ~4 km/h; safely below the lowest 1->2 upshift
 const float REVERSE_INHIBIT_SPEED_RPM = 150.0f; // above this, R is inhibited / pressure dumped
 const uint8_t REVERSE_ABUSE_LINE_PCT  = 15;     // line% if R is forced while moving (slip, not shock)
 const uint32_t ENGAGE_GRACE_MS        = 1500;   // suppress slip-limp during D-engagement clutch sync
@@ -237,16 +240,17 @@ struct DriveMode {
     float  tcc_open_tps;   // TPS% above which TCC is forced open (lower = sportier / more slip)
     bool   lug_guard;      // auto lug-protection downshift active
     bool   torque_cut;     // request shift torque-cut (still gated by ENABLE_TORQUE_CUT hardware)
+    uint8_t launch_gear;   // gear a stopped car drops to (1 = pull in 1st; 2 = gentle/winter start)
 };
 
 // Index 0..4 = lever D, 4, 3, 2, 1.
 const DriveMode DRIVE_MODES[5] = {
-  // name            auto   shiftpt firm   tccTps lug    tqcut
-  { "COMFORT AUTO",  true,  0.85f,  1.00f, 60.0f, true,  false }, // D
-  { "STANDARD AUTO", true,  1.00f,  1.05f, 45.0f, true,  false }, // 4
-  { "SPORT AUTO",    true,  1.20f,  1.15f, 30.0f, true,  false }, // 3
-  { "SPORT MANUAL",  false, 1.00f,  1.20f, 30.0f, true,  false }, // 2
-  { "RACE MANUAL",   false, 1.00f,  1.35f, 25.0f, false, true  }, // 1
+  // name            auto   shiftpt firm   tccTps lug    tqcut  launch
+  { "COMFORT AUTO",  true,  0.85f,  1.00f, 60.0f, true,  false, 1 }, // D
+  { "STANDARD AUTO", true,  1.00f,  1.05f, 45.0f, true,  false, 1 }, // 4
+  { "SPORT AUTO",    true,  1.20f,  1.15f, 30.0f, true,  false, 1 }, // 3
+  { "SPORT MANUAL",  false, 1.00f,  1.20f, 30.0f, true,  false, 1 }, // 2
+  { "RACE MANUAL",   false, 1.00f,  1.35f, 25.0f, false, true,  1 }, // 1
 };
 
 // Forward lever char → DRIVE_MODES index. Non-forward (P/R/N) returns 0 (harmless;
