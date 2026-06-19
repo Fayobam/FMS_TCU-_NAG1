@@ -82,6 +82,7 @@
         <button class="tab" onclick="switchTab('engine')">Engine Profile</button>
         <button class="tab" onclick="switchTab('tuner')">Adaptation</button>
         <button class="tab" onclick="switchTab('shift')">Shift View</button>
+        <button class="tab" onclick="switchTab('threeD')">3D</button>
     </div>
 
     <!-- DASHBOARD TAB -->
@@ -298,6 +299,18 @@
         <canvas id="shift-canvas" style="flex-grow:1; width:100%; display:block; border-radius:0.75rem; min-height:320px;"></canvas>
     </main>
 
+    <!-- 3D TAB (three.js proof — live gauge cluster) -->
+    <main id="tab-threeD" class="tab-content glass-panel" style="flex-grow:1; padding:0; position:relative; overflow:hidden; min-height:420px;">
+        <canvas id="three-canvas" style="display:block; width:100%; height:100%;"></canvas>
+        <div id="t3-mode" style="position:absolute; top:14px; left:0; right:0; text-align:center; font-weight:800; letter-spacing:0.06em; color:var(--cyan); pointer-events:none;">—</div>
+        <div style="position:absolute; left:0; right:0; bottom:16px; display:flex; justify-content:center; gap:3rem; pointer-events:none;">
+            <div style="text-align:center;"><div class="label">RPM</div><div id="t3-rpm" class="data-font" style="font-size:1.7rem; font-weight:800; color:var(--rose);">0</div></div>
+            <div style="text-align:center;"><div class="label">Gear</div><div id="t3-gear" class="data-font" style="font-size:1.7rem; font-weight:800; color:#fff;">N</div></div>
+            <div style="text-align:center;"><div class="label">km/h</div><div id="t3-kmh" class="data-font" style="font-size:1.7rem; font-weight:800; color:var(--cyan);">0</div></div>
+        </div>
+        <div id="three-fallback" style="position:absolute; inset:0; display:none; align-items:center; justify-content:center; color:var(--slate-400); font-size:0.85rem;">3D unavailable — three.min.js failed to load.</div>
+    </main>
+
     <footer class="mt-auto pt-8 pb-2 text-center text-[10px] text-slate-800 tracking-widest uppercase select-none opacity-40">
         Engineered by Fayobam &bull; ModernizedClassics
     </footer>
@@ -311,6 +324,7 @@
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             event.target.classList.add('active');
             document.getElementById('tab-' + tabId).classList.add('active');
+            if (tabId === 'threeD') ensureThree();   // lazy-load three.js on first open
         }
 
         // ----------------------------------------------------
@@ -724,7 +738,8 @@
                 else { hb.style.background = 'rgba(30, 41, 59, 0.4)'; hb.style.borderColor = 'transparent'; hv.style.color = 'var(--slate-400)'; hv.innerText = 'NORMAL'; }
 
                 ShiftChart.push(data);
-            } 
+                ThreeView.update(data);
+            }
             else if (data.type === "cell_data") {
                 cellData = data.data.slice();   // flat int8 stream, length 4*4*4*3
                 renderGrid();
@@ -1004,6 +1019,103 @@
         requestAnimationFrame(render);
         return {push};
     })();
+
+    // ================================================================
+    // 3D VIEW (three.js) — lazy-loaded proof: live gauge cluster.
+    // Runs entirely on the phone GPU; the TCU just serves the file + the
+    // same telemetry JSON. update() is safe to call before three.js loads
+    // (it only sets targets + the HTML overlay numbers).
+    // ================================================================
+    const ThreeView = (function () {
+        let renderer, scene, camera, rpmG, spdG, ready = false, raf = 0;
+        let tRpm = 0, tSpd = 0, dRpm = 0, dSpd = 0;   // target vs displayed (lerped)
+
+        function makeGauge(cx, color) {
+            const g = new THREE.Group(); g.position.x = cx;
+            g.add(new THREE.Mesh(
+                new THREE.TorusGeometry(2, 0.09, 16, 64),
+                new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.85, roughness: 0.35 })));
+            for (let i = 0; i <= 10; i++) {
+                const a = Math.PI * 1.25 - (i / 10) * Math.PI * 1.5;     // 225° → -45° sweep
+                const big = (i % 5 === 0);
+                const t = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.05, big ? 0.3 : 0.16, 0.05),
+                    new THREE.MeshStandardMaterial({ color: big ? color : 0x64748b,
+                        emissive: big ? color : 0x000000, emissiveIntensity: 0.5 }));
+                t.position.set(Math.cos(a) * 1.75, Math.sin(a) * 1.75, 0);
+                t.rotation.z = a - Math.PI / 2; g.add(t);
+            }
+            const ndl = new THREE.Group();
+            const nm = new THREE.Mesh(
+                new THREE.ConeGeometry(0.07, 1.7, 18),
+                new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.55, metalness: 0.5, roughness: 0.3 }));
+            nm.position.y = 0.85; ndl.add(nm);                            // base at hub, tip out
+            const hub = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.2, 0.2, 0.14, 24),
+                new THREE.MeshStandardMaterial({ color: 0x0f172a, metalness: 0.9, roughness: 0.2 }));
+            hub.rotation.x = Math.PI / 2; ndl.add(hub);
+            g.add(ndl); g.userData.needle = ndl;
+            return g;
+        }
+        function setNeedle(g, frac) {
+            frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
+            g.userData.needle.rotation.z = Math.PI * 0.75 - frac * Math.PI * 1.5;  // matches tick sweep
+        }
+        function active() { const t = document.getElementById('tab-threeD'); return t && t.classList.contains('active'); }
+        function onShow() {
+            if (!renderer) return;
+            const host = document.getElementById('tab-threeD');
+            const w = host.clientWidth || 600, h = host.clientHeight || 420;
+            renderer.setSize(w, h, false);
+            camera.aspect = w / h; camera.updateProjectionMatrix();
+        }
+        function loop() {
+            raf = requestAnimationFrame(loop);
+            if (!ready || !active()) return;
+            dRpm += (tRpm - dRpm) * 0.18; dSpd += (tSpd - dSpd) * 0.18;
+            setNeedle(rpmG, dRpm / 7000); setNeedle(spdG, dSpd / 200);
+            const t = performance.now() * 0.0004;
+            camera.position.x = Math.sin(t) * 0.55; camera.lookAt(0, -0.3, 0);
+            renderer.render(scene, camera);
+        }
+        function init() {
+            if (ready) { onShow(); return; }
+            const canvas = document.getElementById('three-canvas');
+            renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(40, 2, 0.1, 100);
+            camera.position.set(0, -0.3, 9);
+            scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+            const dir = new THREE.DirectionalLight(0xffffff, 1.1); dir.position.set(3, 4, 6); scene.add(dir);
+            const pl = new THREE.PointLight(0x22d3ee, 0.7, 40); pl.position.set(-4, -2, 5); scene.add(pl);
+            rpmG = makeGauge(-2.6, 0xfb7185); scene.add(rpmG);   // RPM (rose)
+            spdG = makeGauge(2.6, 0x22d3ee); scene.add(spdG);    // km/h (cyan)
+            ready = true; onShow(); if (!raf) loop();
+        }
+        function update(d) {
+            tRpm = d.engRpm || 0; tSpd = d.kmh || 0;
+            const set = (id, v) => { const e = document.getElementById(id); if (e) e.innerText = v; };
+            set('t3-rpm', Math.round(d.engRpm || 0));
+            set('t3-kmh', Math.round(d.kmh || 0));
+            set('t3-gear', d.gear ?? 'N');
+            set('t3-mode', d.modeName || '—');
+        }
+        return { init, update, onShow };
+    })();
+
+    // Lazy-load three.js (594 KB) only when the 3D tab is first opened, then init the scene.
+    function ensureThree() {
+        if (window.THREE) { ThreeView.init(); return; }
+        if (ensureThree._loading) return;
+        ensureThree._loading = true;
+        const s = document.createElement('script');
+        s.src = 'three.min.js';
+        s.onload = () => ThreeView.init();
+        s.onerror = () => { const f = document.getElementById('three-fallback'); if (f) f.style.display = 'flex'; };
+        document.head.appendChild(s);
+    }
+    window.addEventListener('resize', () => { try { ThreeView.onShow(); } catch (e) {} });
 
     </script>
 </body>

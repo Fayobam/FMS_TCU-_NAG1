@@ -31,6 +31,15 @@ void WebManager::begin() {
         else request->send(200, "text/plain", "FMS TCU Server is LIVE, but index.html is MISSING!");
     });
 
+    // three.js (r148 UMD) for the 3D tab — served from SPIFFS (offline softAP, no CDN).
+    // Lazy-loaded by the page only when the 3D tab is first opened. Cache hard: the
+    // file only changes on a filesystem re-flash.
+    server.on("/three.min.js", HTTP_GET, [](AsyncWebServerRequest *request){
+        AsyncWebServerResponse *r = request->beginResponse(SPIFFS, "/three.min.js", "application/javascript");
+        r->addHeader("Cache-Control", "max-age=31536000, immutable");
+        request->send(r);
+    });
+
     ws.onEvent([this](AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len){
         if(type == WS_EVT_DATA){
             AwsFrameInfo *info = (AwsFrameInfo*)arg;
