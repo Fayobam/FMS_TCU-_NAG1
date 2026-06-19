@@ -83,6 +83,7 @@
         <button class="tab" onclick="switchTab('tuner')">Adaptation</button>
         <button class="tab" onclick="switchTab('shift')">Shift View</button>
         <button class="tab" onclick="switchTab('threeD')">3D</button>
+        <button class="tab" onclick="switchTab('gearbox')">Gearbox 3D</button>
     </div>
 
     <!-- DASHBOARD TAB -->
@@ -308,7 +309,25 @@
             <div style="text-align:center;"><div class="label">Gear</div><div id="t3-gear" class="data-font" style="font-size:1.7rem; font-weight:800; color:#fff;">N</div></div>
             <div style="text-align:center;"><div class="label">km/h</div><div id="t3-kmh" class="data-font" style="font-size:1.7rem; font-weight:800; color:var(--cyan);">0</div></div>
         </div>
-        <div id="three-fallback" style="position:absolute; inset:0; display:none; align-items:center; justify-content:center; color:var(--slate-400); font-size:0.85rem;">3D unavailable — three.min.js failed to load.</div>
+        <div id="three-fallback" class="three-fallback" style="position:absolute; inset:0; display:none; align-items:center; justify-content:center; color:var(--slate-400); font-size:0.85rem;">3D unavailable — three.min.js failed to load.</div>
+    </main>
+
+    <!-- GEARBOX 3D TAB — procedural 722.6 clutch cutaway, driven by clutch-speed telemetry -->
+    <main id="tab-gearbox" class="tab-content glass-panel" style="flex-grow:1; padding:0; position:relative; overflow:hidden; min-height:440px;">
+        <canvas id="gb-canvas" style="display:block; width:100%; height:100%;"></canvas>
+        <div id="gb-flare" style="position:absolute; inset:0; box-shadow:inset 0 0 80px 12px var(--rose); opacity:0; transition:opacity 0.12s; pointer-events:none;"></div>
+        <div style="position:absolute; top:12px; left:0; right:0; text-align:center; pointer-events:none;">
+            <div style="font-weight:800; letter-spacing:0.05em;">
+                <span class="label">Gear</span> <span id="gb-gear" class="data-font" style="font-size:1.5rem; color:var(--cyan);">2</span>
+                <span id="gb-tgt" class="data-font" style="font-size:1.5rem; color:var(--orange);"></span>
+                <span id="gb-phase" class="data-font" style="margin-left:1rem; color:var(--slate-300);">CRUISE</span>
+            </div>
+            <div id="gb-mode" style="font-size:0.7rem; font-weight:700; color:var(--cyan); margin-top:2px;">—</div>
+        </div>
+        <div style="position:absolute; bottom:12px; left:0; right:0; text-align:center; font-size:0.6rem; color:var(--slate-500); pointer-events:none;">
+            Lit = engaged · during a shift the off-going (dims) and on-coming (brightens) clutches animate from live slip · red flash = flare. Per-gear element map is a display approximation.
+        </div>
+        <div id="gb-fallback" class="three-fallback" style="position:absolute; inset:0; display:none; align-items:center; justify-content:center; color:var(--slate-400); font-size:0.85rem;">3D unavailable — three.min.js failed to load.</div>
     </main>
 
     <footer class="mt-auto pt-8 pb-2 text-center text-[10px] text-slate-800 tracking-widest uppercase select-none opacity-40">
@@ -324,7 +343,8 @@
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             event.target.classList.add('active');
             document.getElementById('tab-' + tabId).classList.add('active');
-            if (tabId === 'threeD') ensureThree();   // lazy-load three.js on first open
+            if (tabId === 'threeD')  loadThree(() => ThreeView.init());     // lazy-load three.js on first open
+            if (tabId === 'gearbox') loadThree(() => GearboxView.init());
         }
 
         // ----------------------------------------------------
@@ -739,6 +759,7 @@
 
                 ShiftChart.push(data);
                 ThreeView.update(data);
+                GearboxView.update(data);
             }
             else if (data.type === "cell_data") {
                 cellData = data.data.slice();   // flat int8 stream, length 4*4*4*3
@@ -1104,18 +1125,124 @@
         return { init, update, onShow };
     })();
 
-    // Lazy-load three.js (594 KB) only when the 3D tab is first opened, then init the scene.
-    function ensureThree() {
-        if (window.THREE) { ThreeView.init(); return; }
-        if (ensureThree._loading) return;
-        ensureThree._loading = true;
+    // ================================================================
+    // GEARBOX 3D — procedural 722.6 clutch cutaway. Six elements (K1/K2/K3
+    // clutches, B1/B2/B3 brakes) light up when engaged; during a shift the
+    // off-going dims and the on-coming brightens, driven LIVE by on/off-clutch
+    // slip telemetry. A flare (on-clutch < 0) flashes the case red.
+    // Per-gear engaged-element map is a display approximation; the shift on/off
+    // is derived from it (set difference) so the animation stays self-consistent.
+    // ================================================================
+    const GearboxView = (function () {
+        let renderer, scene, camera, ready = false, raf = 0, flareT = 0;
+        const els = {};
+        const SLIPMAX = 1500;
+        const GEAR_ELEMENTS = { 1:['K1','B2'], 2:['K1','B1'], 3:['K1','K2'], 4:['K2','K3'], 5:['K3','B1'] };
+        const ELDEF = [['K1',0x22d3ee],['K2',0xc084fc],['K3',0x34d399],['B1',0xfb923c],['B2',0xfb7185],['B3',0xfacc15]];
+
+        function engaged(g, prnd) { return prnd === 'R' ? ['K3','B3'] : (GEAR_ELEMENTS[g] || []); }
+        function active() { const t = document.getElementById('tab-gearbox'); return t && t.classList.contains('active'); }
+        function set(id, v) { const e = document.getElementById(id); if (e) e.innerText = v; }
+
+        function makeTextSprite(txt, color) {
+            const c = document.createElement('canvas'); c.width = 128; c.height = 64;
+            const x = c.getContext('2d');
+            x.fillStyle = color; x.font = 'bold 46px ui-monospace,monospace'; x.textAlign = 'center'; x.textBaseline = 'middle';
+            x.fillText(txt, 64, 34);
+            const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true }));
+            sp.scale.set(0.95, 0.48, 1); return sp;
+        }
+        function makePack(px, key, col) {
+            const g = new THREE.Group(); g.position.x = px;
+            const mats = [], isBrake = key[0] === 'B';
+            for (let i = 0; i < 4; i++) {
+                const m = new THREE.MeshStandardMaterial({ color: 0x334155, emissive: col, emissiveIntensity: 0, metalness: 0.6, roughness: 0.4 });
+                const r = isBrake ? 0.72 : 0.55;                       // brakes a touch larger (act on the case)
+                const disc = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.05, 40), m);
+                disc.rotation.z = Math.PI / 2; disc.position.x = (i - 1.5) * 0.13;
+                g.add(disc); mats.push(m);
+            }
+            const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.75, 20),
+                new THREE.MeshStandardMaterial({ color: 0x0f172a, metalness: 0.9, roughness: 0.2 }));
+            hub.rotation.z = Math.PI / 2; g.add(hub);
+            const lbl = makeTextSprite(key, '#' + col.toString(16).padStart(6, '0')); lbl.position.set(0, isBrake ? 1.1 : 0.9, 0); g.add(lbl);
+            els[key] = { group: g, mats, eng: 0, tgt: 0 };
+            return g;
+        }
+        function init() {
+            if (ready) { onShow(); return; }
+            const canvas = document.getElementById('gb-canvas');
+            renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(45, 2, 0.1, 100); camera.position.set(0, 1.2, 10.5);
+            scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+            const d1 = new THREE.DirectionalLight(0xffffff, 1.0); d1.position.set(4, 6, 8); scene.add(d1);
+            const p1 = new THREE.PointLight(0x22d3ee, 0.5, 50); p1.position.set(-7, 2, 5); scene.add(p1);
+            const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 9.4, 20),
+                new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.9, roughness: 0.3 }));
+            shaft.rotation.z = Math.PI / 2; scene.add(shaft);
+            ELDEF.forEach(([k, c], i) => scene.add(makePack((i - 2.5) * 1.55, k, c)));
+            ready = true; onShow(); if (!raf) loop();
+        }
+        function onShow() {
+            if (!renderer) return;
+            const host = document.getElementById('tab-gearbox');
+            const w = host.clientWidth || 700, h = host.clientHeight || 440;
+            renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+        }
+        function update(d) {
+            const from = d.gear, to = d.tgt ?? d.gear, phase = d.phase || 0, prnd = d.prnd;
+            const eFrom = engaged(from, prnd), eTo = engaged(to, prnd);
+            const tgt = { K1:0, K2:0, K3:0, B1:0, B2:0, B3:0 };
+            if (phase === 0 || from === to) {
+                for (const k of eFrom) tgt[k] = 1;
+            } else {
+                for (const k of eFrom) if (eTo.includes(k)) tgt[k] = 1;          // held
+                const off = eFrom.find(k => !eTo.includes(k));
+                const on  = eTo.find(k => !eFrom.includes(k));
+                if (off) tgt[off] = Math.max(0, 1 - Math.abs(d.offClutch || 0) / SLIPMAX);
+                if (on)  tgt[on]  = Math.max(0, 1 - Math.abs(d.onClutch  || 0) / SLIPMAX);
+                if ((d.onClutch || 0) < -120) flareT = performance.now() + 350;  // flare → flash
+            }
+            for (const k in tgt) if (els[k]) els[k].tgt = tgt[k];
+            set('gb-gear', prnd === 'R' ? 'R' : from);
+            set('gb-tgt', (phase && to !== from) ? ('→ ' + to) : '');
+            set('gb-phase', PHASE_NAMES[phase] || 'CRUISE');
+            set('gb-mode', d.modeName || '—');
+        }
+        function loop() {
+            raf = requestAnimationFrame(loop);
+            if (!ready || !active()) return;
+            for (const k in els) {
+                const e = els[k];
+                e.eng += (e.tgt - e.eng) * 0.18;
+                for (const m of e.mats) m.emissiveIntensity = e.eng * 1.6;
+                e.group.scale.setScalar(0.9 + e.eng * 0.14);
+                e.group.rotation.x += 0.008 + e.eng * 0.05;          // engaged packs spin a little
+            }
+            const fl = document.getElementById('gb-flare'); if (fl) fl.style.opacity = (performance.now() < flareT) ? '1' : '0';
+            const t = performance.now() * 0.00028;
+            camera.position.x = Math.sin(t) * 1.4; camera.position.y = 1.0 + Math.cos(t * 0.7) * 0.5;
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+        return { init, update, onShow };
+    })();
+
+    // Shared lazy-loader for three.js (594 KB) — loads once, on first open of any 3D tab.
+    function loadThree(cb) {
+        if (window.THREE) { cb(); return; }
+        loadThree._cbs = loadThree._cbs || []; loadThree._cbs.push(cb);
+        if (loadThree._loading) return;
+        loadThree._loading = true;
         const s = document.createElement('script');
         s.src = 'three.min.js';
-        s.onload = () => ThreeView.init();
-        s.onerror = () => { const f = document.getElementById('three-fallback'); if (f) f.style.display = 'flex'; };
+        s.onload = () => { loadThree._cbs.forEach(f => f()); loadThree._cbs = []; };
+        s.onerror = () => document.querySelectorAll('.three-fallback').forEach(f => f.style.display = 'flex');
         document.head.appendChild(s);
     }
-    window.addEventListener('resize', () => { try { ThreeView.onShow(); } catch (e) {} });
+    window.addEventListener('resize', () => { try { ThreeView.onShow(); GearboxView.onShow(); } catch (e) {} });
 
     </script>
 </body>

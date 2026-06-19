@@ -292,6 +292,7 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["type"]      = "telemetry";
     doc["prnd"]      = String(telemetry.prnd_state);
     doc["gear"]      = telemetry.current_gear;
+    doc["tgt"]       = telemetry.target_gear;   // for the 3D gearbox transition view
     doc["mode"]      = telemetry.drive_mode;
     doc["modeName"]  = DRIVE_MODES[telemetry.drive_mode <= 4 ? telemetry.drive_mode : 0].name;
     doc["engRpm"]    = telemetry.engine_rpm;
