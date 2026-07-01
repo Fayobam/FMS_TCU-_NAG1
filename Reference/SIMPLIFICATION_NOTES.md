@@ -54,7 +54,7 @@ dashboard's Engine Profile tab, not this header.
 > that pattern well elsewhere, e.g. the MAP_KPA note at `TCU_Data.h:111`).
 
 ### S3 — Remove the write-only `pn_switch_raw` field + its false comment
-**Status:** TODO
+**Status:** DONE (2026-06-20)
 **Where:** `TCU_Data.h:317-318` (field), `InputManager.cpp:92` (only write),
 `ShiftScheduler.cpp:832-834` (comment claiming "pn_switch_raw is still
 telemetered for diagnostics" — it is **not** in the JSON; nothing reads it).

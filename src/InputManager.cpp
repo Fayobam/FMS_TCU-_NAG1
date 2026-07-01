@@ -85,11 +85,6 @@ void InputManager::decodePRND() {
         case 0b1010: telemetry.prnd_state = '1'; break;
         // invalid/between-detent code: keep last known state
     }
-
-    // P/N for engagement gating now comes from the SHIFTER (this 4-bit decode),
-    // NOT the multiplexed temp pin. Frees pin 39 to be pure ATF temp and removes
-    // the open-sensor / cold-NTC false-"P/N" that could block drive engagement.
-    telemetry.pn_switch_raw = (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N');
 }
 
 // Rising-edge latch: one request per physical pull. Holding the paddle does

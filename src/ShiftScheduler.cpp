@@ -826,7 +826,7 @@ void ShiftScheduler::update() {
         // pin-39 P/N switch. That pin is shared with the ATF temp sensor and reads
         // "in P/N" whenever the temp sensor is open/cold (>3.0 V), which would silently
         // block engagement forever. The plate decodes P/N/R/D directly, so engage off
-        // it alone. (pn_switch_raw is still telemetered for diagnostics.)
+        // it alone.
         bool in_park_neutral = (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N');
 
         // Engagement window: leaving P/N (into D or R) opens the lever window (Y4 pulse
