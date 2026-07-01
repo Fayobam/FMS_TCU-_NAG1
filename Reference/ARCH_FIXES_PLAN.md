@@ -49,7 +49,17 @@ flags so a pull during the window doesn't fire stale afterwards.
 while `_gear_resync_pending`; normal dispatch resumes after resync.
 
 ### F2 — Mid-shift abort: reclassify gear from ratio instead of asserting 2nd  [R1b]
-**Status:** TODO
+**Status:** DONE (2026-06-20). Deviation from sketch — root cause was an R-path
+hole, not the abort itself: N/P already recovered via the P/N latch-clear +
+re-engagement resync, but `drive_engaged` was NEVER cleared for R, so any
+D→R→D excursion (abort or not) skipped re-engagement and kept a stale gear-2
+label with no resync (F1 guard inert). Fix: (a) latch now clears on ANY
+non-forward range (P/N/R) — abort recovery rides the normal re-engagement
+path; (b) the drive latch opens the ENGAGE_GRACE window itself when latching
+at speed (R→D has no P/N falling edge), which also arms slip-limp suppression
+for R→D sync; (c) a pending resync is cleared when leaving forward range, so
+gear is never classified from an N/R ratio. Abort keeps gear=2 as an explicit
+placeholder only.
 **Design:** In the abort handler (`ShiftScheduler.cpp:802-810`), replace the
 hard `current_gear=2` with the same pattern as engagement-at-speed: set
 `_gear_resync_pending=true` + `_engage_grace_until_ms=millis()+ENGAGE_GRACE_MS`

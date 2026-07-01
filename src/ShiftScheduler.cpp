@@ -804,8 +804,8 @@ void ShiftScheduler::update() {
     if (in_active_shift && !isForwardRange()) {
         _solenoids->stopAllShiftSolenoids();
         _solenoids->setShiftPressure(100);    // de-energized standby (not full current)
-        telemetry.current_gear = 2;           // disengaging to N → re-engages at 2nd
-        telemetry.target_gear  = 2;
+        telemetry.current_gear = 2;           // placeholder (hydraulic default); the drive
+        telemetry.target_gear  = 2;           // latch re-latches + ratio-resyncs on return to D
         _current_phase = PHASE_CRUISING;
         setSafetyEvent("SHIFT ABORTED (selector left drive)");
     }
@@ -849,17 +849,25 @@ void ShiftScheduler::update() {
             telemetry.drive_engaged = true;
             telemetry.current_gear  = 2;     // engages at hydraulic-default 2nd; checkLaunchGear() drops to 1st when stopped
             telemetry.target_gear   = 2;
-            // Engaged while already rolling (N->D at speed, or a reboot mid-drive
+            // Engaged while already rolling (N->D at speed, R->D, or a reboot mid-drive
             // with the shift valves still hydraulically latched in a higher gear):
             // "2nd" is a guess — re-classify from the live ratio after clutch sync.
             _gear_resync_pending = (telemetry.output_rpm > OUTPUT_RPM_MOVING);
+            // R->D has no P/N falling edge to open the grace window, so open it here:
+            // classification (and slip-limp arming) must wait for the clutches to sync.
+            if (_gear_resync_pending) _engage_grace_until_ms = millis() + ENGAGE_GRACE_MS;
         }
-        if (in_park_neutral) {
+        // Leaving the forward range — P, N, or R, including after a mid-shift abort —
+        // drops the latch so the NEXT forward selection re-runs the full engagement
+        // above. (R previously never cleared the latch: a D->R->D excursion kept the
+        // stale gear label with no resync.) Also clears a pending resync: gear must
+        // never be classified from an N/R ratio.
+        if (!isForwardRange()) {
             if (telemetry.drive_engaged) _adaptives->requestFlush();  // persist learning at the stop
             telemetry.drive_engaged = false;
             _gear_resync_pending = false;
-            _prev_pn_raw = true;
         }
+        if (in_park_neutral) _prev_pn_raw = true;
         if (_gear_resync_pending && millis() >= _engage_grace_until_ms) {
             _gear_resync_pending = false;
             uint8_t g = classGearFromRatio();
