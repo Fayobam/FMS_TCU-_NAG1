@@ -100,6 +100,8 @@ const float OUTPUT_RPM_MOVING         = 150.0f;
 // so pull-away uses the 3.93 first ratio instead of the 722.6 hydraulic-default 2nd.
 const float LAUNCH_GEAR_MAX_OUTPUT_RPM = 100.0f;   // ~4 km/h; safely below the lowest 1->2 upshift
 const float REVERSE_INHIBIT_SPEED_RPM = 150.0f; // above this, R is inhibited / pressure dumped
+const uint16_t REVERSE_LEGIT_STOP_MS  = 300;    // output must be below the threshold this long before
+                                                // R-entry counts as a deliberate stop->reverse
 const uint8_t REVERSE_ABUSE_LINE_PCT  = 15;     // line% if R is forced while moving (slip, not shock)
 const uint32_t ENGAGE_GRACE_MS        = 1500;   // suppress slip-limp during D-engagement clutch sync
 

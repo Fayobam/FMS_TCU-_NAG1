@@ -84,6 +84,7 @@ class ShiftScheduler {
     bool  _gear_resync_pending;     // engaged while rolling → re-classify gear after sync
     char  _prev_prnd;              // edge-detect for reverse selection
     bool  _legit_reverse;         // R was selected while stopped → genuine reverse, allow any speed
+    unsigned long _slow_since_ms = 0; // when output dropped below REVERSE_INHIBIT_SPEED_RPM (0 = above)
 
     // TPS rate-of-change torque anticipation (20ms windowed ROC)
     float         _tps_hist[TPS_ROC_WINDOW_MS];

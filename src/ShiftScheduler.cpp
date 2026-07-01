@@ -34,6 +34,8 @@ void ShiftScheduler::begin() {
     _gear_resync_pending = false;
     _prev_prnd = 'P';
     _legit_reverse = false;
+    _slow_since_ms = millis();   // boot presumes stationary (a reboot mid-drive clears
+                                 // this on the first tick once output reads > threshold)
     _prev_was_power = false;
     _last_pressure_update_ms = millis();
     _spc_cmd = 0.0f;
@@ -671,9 +673,20 @@ bool ShiftScheduler::checkReverseInhibit() {
     // Instead latch intent on the EDGE of entering R:
     //   entered R while stopped  -> genuine reverse, allow any subsequent speed
     //   entered R while rolling  -> abuse, run the failsafe
+    // Dwell tracker: how long the output shaft has been continuously below the
+    // inhibit threshold. One sample below it is not "stopped" — a momentary dip
+    // (speed noise, a crest, hard braking blip) at the exact instant R lands must
+    // not legitimize reverse at speed.
+    if (telemetry.output_rpm <= REVERSE_INHIBIT_SPEED_RPM) {
+        if (_slow_since_ms == 0) _slow_since_ms = millis();
+    } else {
+        _slow_since_ms = 0;
+    }
+
     bool entering_R = (now == 'R' && _prev_prnd != 'R');
     if (entering_R) {
-        _legit_reverse = (telemetry.output_rpm <= REVERSE_INHIBIT_SPEED_RPM);
+        _legit_reverse = (_slow_since_ms != 0 &&
+                          millis() - _slow_since_ms >= REVERSE_LEGIT_STOP_MS);
     }
     if (now != 'R') _legit_reverse = false;   // leaving R clears the latch
     _prev_prnd = now;

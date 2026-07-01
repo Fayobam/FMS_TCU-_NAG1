@@ -69,7 +69,10 @@ shift can dispatch until the label is ratio-verified.
 **Accept:** builds; abort while rolling leads to ratio-classified gear, not 2.
 
 ### F3 — Reverse legit-latch requires a dwell, not an instantaneous sample  [R8]
-**Status:** TODO
+**Status:** DONE (2026-06-20). `_slow_since_ms` dwell tracker; R-entry is legit
+only if output has been below REVERSE_INHIBIT_SPEED_RPM for
+REVERSE_LEGIT_STOP_MS (300 ms) continuously. begin() seeds the tracker so a
+boot while parked in R stays legit; a mid-drive reboot clears it first tick.
 **Design:** Latch `_legit_reverse` only if `output_rpm <= REVERSE_INHIBIT_SPEED_RPM`
 has held continuously for ~300 ms before the R edge (track
 `_stopped_since_ms` in `checkReverseInhibit()`, `ShiftScheduler.cpp:659-695`).
