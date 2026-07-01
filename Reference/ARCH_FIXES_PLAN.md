@@ -4,6 +4,10 @@ Source: `ARCH_REVIEW_2026-06.md` (full findings, file:line refs). This file is
 the **single source of truth for progress** — designed so a fresh session (or a
 session reset mid-job) can resume with zero context loss.
 
+Quality-only companion queue: `SIMPLIFICATION_NOTES.md` (S1–S13, declutter +
+learning notes; no behavior changes). S1–S4 are safe any time; S5–S8 must not
+collide with an in-flight F-item; S11 waits until this queue is done.
+
 ## Working protocol (follow this every fix)
 
 1. Pick the next `TODO` item below (top to bottom unless the user redirects).
