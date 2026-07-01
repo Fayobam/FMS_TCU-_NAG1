@@ -31,7 +31,12 @@ if the file has drifted.
 ## Fix queue
 
 ### F1 — Gate shift dispatch while gear identity is unverified  [R1a]
-**Status:** TODO
+**Status:** DONE (2026-06-20). Deviation from sketch: implemented as ONE guard
+inside beginShift() (`if (_gear_resync_pending) return false;`) instead of
+gating each dispatch site — covers all six sources (PADDLE/OVERREV/LUG/
+KICKDOWN/AUTO/LAUNCH) incl. the checkLaunchGear() added after the review, and
+any future caller. Paddle pulls during the window are dropped (flags cleared
+at dispatch), not queued.
 **Risk:** Highest — cross-apply / planetary tie-up from a false `current_gear=2`.
 **Design:** In `ShiftScheduler::update()` CRUISING block, while
 `_gear_resync_pending` is true, skip paddle dispatch AND `checkSafetyShifts()` /

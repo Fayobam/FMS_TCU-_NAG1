@@ -68,7 +68,7 @@ want it on the dashboard someday, adding a JSON field takes one line then.
 > `grep -rn "pn_switch_raw" src/` before *and* after the change.
 
 ### S4 — Move `Summary_of_knowledge_and_progress.md` out of `src/`
-**Status:** TODO
+**Status:** DONE (2026-06-20)
 **Where:** `src/Summary_of_knowledge_and_progress.md` → `Reference/`.
 **What:** `src/` is the compiler's directory; docs live in `Reference/` with
 the rest (AUTO_SHIFT_MAP, UN52 insights, this file). Pure `git mv`.

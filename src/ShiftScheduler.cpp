@@ -214,6 +214,13 @@ void ShiftScheduler::updateTCC(bool ptick) {
 // ----------------------------------------------------------------------------
 bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char* source) {
     if (_current_phase != PHASE_CRUISING) return false;          // already shifting
+    // Gear identity is only a GUESS while a post-engagement ratio resync is pending
+    // (engaged at speed / reboot mid-drive / aborted shift). A shift begun from a
+    // wrong gear label fires the wrong routing solenoid and can command two clutch
+    // packs at once (cross-apply / tie-up). NO shift — paddle, auto, or safety —
+    // may start until the label is ratio-verified. Engine overrev inside this
+    // <=1.5 s window is the rev limiter's job, not the gearbox's.
+    if (_gear_resync_pending) return false;
     if (target_gear < 1 || target_gear > 5) return false;
 
     // Money-shift / overrev guard on ANY downshift (manual or auto).
