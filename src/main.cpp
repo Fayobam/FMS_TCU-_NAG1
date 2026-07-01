@@ -6,6 +6,7 @@
 //          owns all its sampling internally (staggered ADC round-robin).
 // ============================================================================
 #include <Arduino.h>
+#include "esp_task_wdt.h"
 
 #include "TCU_Data.h"
 #include "EngineProfile.h"
@@ -67,11 +68,31 @@ void loop() {
 // 4. PHYSICS LOOP (Core 1) - 1000Hz
 // ============================================================================
 void core1PhysicsTask(void *pvParameters) {
+    // Hardware task watchdog. If this loop ever stalls — a wedged driver call, an
+    // accidental infinite loop, priority-10 WiFi work starving core 1 — the chip
+    // panics (register dump on serial) and reboots into the safe boot state: all
+    // solenoids de-energized, then drive latch + gear resync recover the gear and
+    // block shifting until the label is ratio-verified. Without this, a stall
+    // mid-shift holds a routing coil at its 80% kick and SPC mid-ramp forever.
+    // 250 ms is ~250 loop periods and well above the worst legitimate stall
+    // (an NVS commit's flash-cache suspension is tens of ms). The dashboard/WiFi
+    // tasks and the idle tasks are deliberately NOT watched — a WiFi stall must
+    // never reboot the car.
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = 250,
+        .idle_core_mask = 0,
+        .trigger_panic = true,
+    };
+    if (esp_task_wdt_init(&wdt_cfg) == ESP_ERR_INVALID_STATE)
+        esp_task_wdt_reconfigure(&wdt_cfg);   // Arduino core had already started the TWDT
+    esp_task_wdt_add(NULL);                   // watch THIS task
+
     const TickType_t xFrequency = 1;
     TickType_t xLastWakeTime = xTaskGetTickCount();
     unsigned long lastOverrunLog = 0;
 
     while (true) {
+        esp_task_wdt_reset();
         uint32_t t0 = micros();
 
         inputManager.update();     // PRND + paddles + one ADC channel (round-robin)

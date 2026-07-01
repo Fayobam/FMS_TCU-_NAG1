@@ -81,7 +81,14 @@ A momentary dip below ~5 km/h can no longer legitimize R at speed.
 **Accept:** builds; brief dip below threshold at the R instant → abuse path still arms.
 
 ### F4 — Task watchdog on the physics loop  [R2]
-**Status:** TODO
+**Status:** DONE (2026-06-20). IDF 5.1 struct API (`esp_task_wdt_config_t`,
+250 ms, panic=true, idle tasks unwatched); handles the Arduino core having
+already started the TWDT via `esp_task_wdt_reconfigure`. Only the physics
+task is subscribed. NOTE bench test still owed: deliberate `while(1)` stall
+must reset within ~250 ms; confirm no false trips across a long drive
+(loop-overrun DTC stays the early-warning layer at 1.5 ms). Recovery path
+after a panic reboot is safe BECAUSE F1+F2 landed first (boot de-energized →
+drive latch → resync gate).
 **Design:** `esp_task_wdt_init()` (~250 ms timeout, panic=true) +
 `esp_task_wdt_add(NULL)` in `core1PhysicsTask`, `esp_task_wdt_reset()` each
 loop. A Core-1 stall then resets the chip into the safe boot state (all
