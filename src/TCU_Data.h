@@ -83,11 +83,10 @@ extern TransSpec g_trans;
 #define RATIO_REV (g_trans.ratio[5])
 
 // ============================================================================
-// 3. SAFETY THRESHOLDS (M111.985 + TVS1320, 6500 rpm ceiling)
+// 3. SAFETY THRESHOLDS (M111.985 + TVS1320)
 // ============================================================================
-const float RPM_HARD_CEILING        = 6500.0f; // Never let predicted RPM exceed this
-const float RPM_OVERREV_UPSHIFT      = 6300.0f; // Auto-upshift trigger (margin below ceiling)
-const float RPM_LUG_THRESHOLD        = 1100.0f; // Below this under load = lugging
+// (Overrev and lug RPM thresholds live in EngineProfile — NVS-backed and
+//  web-editable on the dashboard. Editing a constant here would do nothing.)
 const float TPS_LUG_LOAD_PCT         = 25.0f;   // Lug protection only active above this throttle
 const float RPM_MAX_SAFE_DOWNSHIFT   = 6000.0f; // Money-shift guard ceiling for downshifts
 const unsigned long AUTO_SHIFT_COOLDOWN_MS = 500; // Min gap between auto-safety shifts

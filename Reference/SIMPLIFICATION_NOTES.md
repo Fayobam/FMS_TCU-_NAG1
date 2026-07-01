@@ -37,7 +37,7 @@ column *is* the coast schedule now. (Also listed in F9 — tick both when done.)
 > it any time. Deleting is not losing.
 
 ### S2 — Delete the three dead safety constants
-**Status:** TODO
+**Status:** DONE (2026-06-20) — tombstone comment left pointing at EngineProfile.
 **Where:** `TCU_Data.h:88-90` — `RPM_HARD_CEILING`, `RPM_OVERREV_UPSHIFT`,
 `RPM_LUG_THRESHOLD`. Zero uses in `src/`.
 **What:** All three were superseded by the NVS-backed, web-editable
