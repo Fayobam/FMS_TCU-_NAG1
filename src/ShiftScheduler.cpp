@@ -451,37 +451,13 @@ void ShiftScheduler::checkSafetyShifts() {
 }
 
 // ----------------------------------------------------------------------------
-// COAST-DOWN SCHEDULER (spec §4.5). While coasting to a stop at closed throttle,
-// auto-downshift at output-shaft RPM thresholds so each catch lands at an idle-
-// friendly turbine speed. Floor is 2nd. Suppressed if a paddle request is pending.
-// ----------------------------------------------------------------------------
-void ShiftScheduler::checkCoastDownSchedule() {
-    if (_current_phase != PHASE_CRUISING) return;
-    if (!isForwardRange()) return;
-    if (!currentMode().auto_shift) return;   // manual modes (2/1): the driver downshifts
-    if (telemetry.paddle_up_request || telemetry.paddle_down_request) return;
-    if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
-    if (telemetry.tps_pct >= CLASS_COAST_TPS_PCT) return;     // coast only (closed throttle)
-
-    uint8_t g = telemetry.current_gear;
-    if (g <= 2) return;                                       // floor at 2nd
-    float o = telemetry.output_rpm;
-    bool want = (g == 5 && o < COAST_DN_5_TO_4) ||
-                (g == 4 && o < COAST_DN_4_TO_3) ||
-                (g == 3 && o < COAST_DN_3_TO_2);
-    if (want && beginShift(g - 1, false, "COAST")) {
-        telemetry.last_auto_shift_ms = millis();
-    }
-}
-
-// ----------------------------------------------------------------------------
 // AUTO SHIFT SCHEDULE (full automatic up/down). Runs only in auto drive modes
 // (D/4/3). Interpolates the AUTO_SHIFT_MAP km/h thresholds for the current gear by
 // TPS, stretches them by the mode's shift_pt_scale (sport holds gears longer), and
 // shifts when road km/h crosses. Money-shift (beginShift) + overrev/lug
 // (checkSafetyShifts) guards stay on top; AUTO_SHIFT_COOLDOWN_MS + the map's built-in
 // up>down hysteresis prevent hunting. A pending paddle request wins this tick.
-// Supersedes checkCoastDownSchedule (the closed-throttle column IS the coast schedule).
+// The map's closed-throttle column doubles as the coast-down schedule.
 // ----------------------------------------------------------------------------
 void ShiftScheduler::checkAutoShift() {
     if (_current_phase != PHASE_CRUISING) return;

@@ -208,13 +208,6 @@ const int      TCC_LOCK_STEP        = 2;     // % per ptick while locking up
 const int      TCC_RELEASE_STEP     = 10;    // % per ptick while opening
 const uint16_t TCC_POST_SHIFT_HOLD_MS = 300; // keep TCC fully open this long after a shift ends
 
-// --- Coast-down auto scheduler (spec §4.5) — output-shaft RPM thresholds ---
-// Each catch lands at an idle-friendly turbine speed. Floor is 2nd (owner's
-// 2nd-gear-launch model); 1st stays the driver's choice. 24-tooth output reluctor.
-const float COAST_DN_5_TO_4 = 1900.0f;  // 5->4 below this output rpm
-const float COAST_DN_4_TO_3 = 1400.0f;  // 4->3
-const float COAST_DN_3_TO_2 =  900.0f;  // 3->2
-
 // --- Kickdown arm (spec §4.6) ---
 const float KICKDOWN_TPS_PCT      = 70.0f;   // tps above which a power-down is evaluated
 const float KICKDOWN_MAX_ENG_RPM  = 5200.0f; // don't kickdown if already this high (would overrev)

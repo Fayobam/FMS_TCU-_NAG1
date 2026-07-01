@@ -20,7 +20,8 @@ deferred until F1–F11 are done.
 ## A. Dead code — delete it (verified unused by grep, 2026-06-20)
 
 ### S1 — Delete `checkCoastDownSchedule()` and the `COAST_DN_*` constants
-**Status:** TODO
+**Status:** DONE (2026-06-20) — also satisfies the F9 bullet in ARCH_FIXES_PLAN.
+Note: line refs drifted (launch-gear feature landed after the review); located by symbol.
 **Where:** `ShiftScheduler.h:116`, `ShiftScheduler.cpp:453-475`,
 `TCU_Data.h:208-216`; also the "Supersedes checkCoastDownSchedule" comment at
 `ShiftScheduler.cpp:484` once its referent is gone.
