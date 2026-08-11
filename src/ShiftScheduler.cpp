@@ -32,6 +32,7 @@ void ShiftScheduler::begin() {
     _ht_release_start_ms = 0;
     _engage_grace_until_ms = 0;
     _gear_resync_pending = false;
+    _resync_ready_ms = 0;
     _prev_prnd = 'P';
     _legit_reverse = false;
     _slow_since_ms = millis();   // boot presumes stationary (a reboot mid-drive clears
@@ -225,6 +226,13 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     if (_gear_resync_pending) return false;
     if (target_gear < 1 || target_gear > 5) return false;
 
+    // Every legal 722.6 shift is single-step and has exactly one routing solenoid.
+    // A pair with none (skip-shift, same-gear) must be refused BEFORE any state is
+    // mutated: fireShiftSolenoid(0) is a silent no-op, so the phases would run with
+    // nothing energised and end by asserting a gear the gearbox never entered.
+    uint8_t routing_pin = getRoutingSolenoidForShift(telemetry.current_gear, target_gear);
+    if (routing_pin == 0) return false;
+
     // Money-shift / overrev guard on ANY downshift (manual or auto).
     // Predict the post-downshift turbine speed TWO independent ways and trust the
     // HIGHER (fail-safe): from the output sensor (output × target ratio) AND from the
@@ -273,7 +281,7 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     _sync_stable_since_ms = 0;
     _turbine_rpm_at_shift_start = telemetry.turbine_rpm;
     _output_rpm_at_shift_start  = telemetry.output_rpm;
-    _active_routing_pin = getRoutingSolenoidForShift(_from_gear, target_gear);
+    _active_routing_pin = routing_pin;             // validated above, never 0
 
     _solenoids->fireShiftSolenoid(_active_routing_pin);
     _shift_stopwatch_start    = millis();
@@ -868,7 +876,10 @@ void ShiftScheduler::update() {
             _gear_resync_pending = (telemetry.output_rpm > OUTPUT_RPM_MOVING);
             // R->D has no P/N falling edge to open the grace window, so open it here:
             // classification (and slip-limp arming) must wait for the clutches to sync.
-            if (_gear_resync_pending) _engage_grace_until_ms = millis() + ENGAGE_GRACE_MS;
+            if (_gear_resync_pending) {
+                _engage_grace_until_ms = millis() + ENGAGE_GRACE_MS;
+                _resync_ready_ms       = _engage_grace_until_ms;
+            }
         }
         // Leaving the forward range — P, N, or R, including after a mid-shift abort —
         // drops the latch so the NEXT forward selection re-runs the full engagement
@@ -881,14 +892,17 @@ void ShiftScheduler::update() {
             _gear_resync_pending = false;
         }
         if (in_park_neutral) _prev_pn_raw = true;
-        if (_gear_resync_pending && millis() >= _engage_grace_until_ms) {
+        // Resync deadline differs by cause: engaging at speed waits the full clutch-sync
+        // grace; an unverified shift only needs the driveline to settle (and must resolve
+        // BEFORE slip-limp would trip on the mismatch it caused).
+        if (_gear_resync_pending && millis() >= _resync_ready_ms) {
             _gear_resync_pending = false;
             uint8_t g = classGearFromRatio();
             if (g != telemetry.current_gear) {
                 telemetry.current_gear = g;
                 telemetry.target_gear  = g;
                 char buf[64];
-                snprintf(buf, sizeof(buf), "GEAR RESYNC: ratio says %d (engaged at speed)", g);
+                snprintf(buf, sizeof(buf), "GEAR RESYNC: ratio says %d", g);
                 setSafetyEvent(buf);
                 Serial.println(buf);
             }
@@ -971,6 +985,28 @@ void ShiftScheduler::finishShift() {
     _current_phase = PHASE_LOCK; _phase_start_tick = xTaskGetTickCount();
 }
 
+// A phase backstop expired with the ratio still nowhere near the target: the shift
+// did NOT demonstrably happen (weak line pressure, cold ATF, a lazy valve, a failing
+// solenoid). Asserting the target gear here is what makes the gear label lie — and the
+// label is what picks the routing solenoid for the NEXT shift, so a false one can
+// command two clutch packs at once (cross-apply, review item R1).
+//
+// So: keep the label we had, revert target to it (so the slip-limp check compares
+// against the gear we still believe in, not a fiction), and mark the label unverified.
+// F1 then blocks every shift until the post-settle ratio resync re-identifies the gear.
+// No adaptation — a shift that never proved itself teaches nothing.
+void ShiftScheduler::abandonShift(const char* why) {
+    telemetry.last_shift_time_ms = millis() - _shift_stopwatch_start;
+    _solenoids->stopShiftSolenoid(_active_routing_pin);
+    telemetry.target_gear = telemetry.current_gear;
+    _gear_resync_pending  = true;
+    _resync_ready_ms      = millis() + GEAR_UNVERIFIED_SETTLE_MS;
+    dtcManager.trip(DTC_SHIFT_UNVERIFIED);
+    setSafetyEvent(why);
+    Serial.println(why);
+    _current_phase = PHASE_LOCK; _phase_start_tick = xTaskGetTickCount();
+}
+
 void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample) {
     if (ptick && _current_phase != PHASE_END) applyShiftMPC();
 
@@ -1046,7 +1082,11 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
                 if (t < (unsigned long)(0.6f * _inertia_target_ms)) _harsh_detected = true; // too firm
                 finishShift();
             } else if (t >= 600) {
-                finishShift();                        // ratio backstop
+                // Backstop: the speed change never happened. Only claim the gear if the
+                // ratio actually arrived (tolerance is looser than `synced` — a slow but
+                // real shift still counts); otherwise the label stays unverified.
+                if (fabsf(telemetry.live_ratio - _ratio_target) <= SHIFT_VERIFY_RATIO_TOL) finishShift();
+                else abandonShift("UPSHIFT UNVERIFIED (ratio never reached target)");
             }
             break;
         }
@@ -1108,7 +1148,10 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
                         finishShift();
                 } else _sync_stable_since_ms = 0;
             }
-            if (t >= 600) finishShift();
+            if (t >= 600) {                           // backstop — same verify rule as INERTIA
+                if (fabsf(telemetry.live_ratio - _ratio_target) <= SHIFT_VERIFY_RATIO_TOL) finishShift();
+                else abandonShift("DOWNSHIFT UNVERIFIED (ratio never reached target)");
+            }
             break;
 
         case PHASE_LOCK:

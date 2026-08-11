@@ -136,6 +136,18 @@ const float DS_BIND_EXTRA_RPM    = 40.0f; // extra output drop (above decel tren
 // single noisy speed sample can never poison the adaptation tables (V10).
 const uint16_t RATIO_EVENT_CONFIRM_MS = 10;
 
+// --- Unverified-shift handling (F-BACKSTOP) ---
+// A shift that hits its phase backstop without the ratio ever reaching the target did
+// NOT demonstrably happen. Asserting the target gear there would make the gear label
+// lie about the gearbox, and the label is what picks the routing solenoid for the NEXT
+// shift (cross-apply hazard R1). Instead the label is marked unverified and re-derived
+// from the live ratio after this settle window, during which F1 blocks all dispatch.
+// Must stay BELOW the 400 ms slip-limp confirmation so the resync resolves the gear
+// before limp would trip on the mismatch.
+const uint16_t GEAR_UNVERIFIED_SETTLE_MS = 250;
+// Ratio must be within this of the target for a shift to count as completed.
+const float SHIFT_VERIFY_RATIO_TOL = 0.12f;
+
 // --- Clutch-speed phase transitions (Phase 1b, opt-in via EngineProfile.cl_speed_transitions) ---
 // Off-going clutch slip above MOVE = fill complete / element releasing; on-coming slip below
 // SYNC = synchronised. These read the clutch-speed model (telemetry.on/off_clutch_rpm), which is

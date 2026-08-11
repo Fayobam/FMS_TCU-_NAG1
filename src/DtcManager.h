@@ -19,7 +19,8 @@ enum DtcCode : uint8_t {
     DTC_REVERSE_AT_SPEED,        // R selected while rolling forward
     DTC_OVERREV,                 // predictive overrev auto-upshift fired (one-shot event)
     DTC_LOOP_OVERRUN,            // 1 kHz physics loop missed its deadline (one-shot event)
-    DTC_COUNT
+    DTC_SHIFT_UNVERIFIED,        // shift hit its backstop without the ratio reaching target
+    DTC_COUNT                    // NOTE: appending here re-seeds the persisted count array once
 };
 
 const char* dtcName(uint8_t code);

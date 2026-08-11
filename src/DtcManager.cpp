@@ -16,6 +16,7 @@ static const char* DTC_NAMES[DTC_COUNT] = {
     "REVERSE AT SPEED",
     "OVERREV UPSHIFT",
     "LOOP OVERRUN",
+    "SHIFT UNVERIFIED",
 };
 const char* dtcName(uint8_t code) { return (code < DTC_COUNT) ? DTC_NAMES[code] : "?"; }
 

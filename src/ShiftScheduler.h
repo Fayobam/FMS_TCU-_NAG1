@@ -30,7 +30,15 @@ enum ShiftPhase {
 };
 
 class ShiftScheduler {
+// Host tests (pio test -e native) drive the internals directly so pure helpers
+// — the routing table, the ratio classifier — can be asserted without faking a
+// whole driving scenario. UNIT_TEST is defined ONLY by the native env; the
+// firmware build is unchanged.
+#ifdef UNIT_TEST
+  public:
+#else
   private:
+#endif
     SolenoidDriver* _solenoids;
     AdaptiveMemory* _adaptives;
 
@@ -81,7 +89,8 @@ class ShiftScheduler {
 
     bool  _prev_pn_raw;             // edge-detect for the engagement (lever) window
     unsigned long _engage_grace_until_ms; // suppress slip-limp during D-engagement sync
-    bool  _gear_resync_pending;     // engaged while rolling → re-classify gear after sync
+    bool  _gear_resync_pending;     // gear label unverified → re-classify from ratio
+    unsigned long _resync_ready_ms; // when the pending resync may run (settle deadline)
     char  _prev_prnd;              // edge-detect for reverse selection
     bool  _legit_reverse;         // R was selected while stopped → genuine reverse, allow any speed
     unsigned long _slow_since_ms = 0; // when output dropped below REVERSE_INHIBIT_SPEED_RPM (0 = above)
@@ -128,7 +137,8 @@ class ShiftScheduler {
     void captureTrace();                      // high-rate datalog sample (bench tuning)
     void setSPC(float pct);                   // write _spc_cmd + command solenoid
     void applyShiftMPC();                     // MPC rule during a shift (per class/load)
-    void finishShift();                       // latch gear, schedule END decay, adapt
+    void finishShift();                       // ratio proved the target: latch gear, adapt
+    void abandonShift(const char* why);       // backstop hit unproven: keep label, force resync
     void evaluateAdaptation();                // class-indexed learning (Phase 5)
     uint8_t classGearFromRatio();             // nearest-ratio gear classifier (limp/abort)
     float getTargetRatio(uint8_t gear);

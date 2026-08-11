@@ -71,16 +71,20 @@ void SolenoidDriver::fireShiftSolenoid(uint8_t requested_pin) {
 
     if (target == nullptr) return;
 
-    // A garage-owned Y4 sits in STATE_HOLDING at the ~37% B2 counter-pressure pulse.
-    // A real 3-4 shift routes through Y4 and MUST take it over — kick from holding,
-    // not be silently blocked (else the shift never happens hydraulically and the gear
-    // label drifts until limp catches it). The shift now owns Y4; garage ownership clears.
+    // A REAL SHIFT OUTRANKS ANY CONDITIONING PULSE. Both the garage Y4 pulse (~37% B2
+    // counter-pressure) and the boot Y3 crank pulse (~40%) park their coil in
+    // STATE_HOLDING; without these pre-emptions fireShiftSolenoid() would silently do
+    // nothing, the shift would never happen hydraulically, and the gear label would
+    // drift until limp caught it. Worse for Y3: update() force-releases the pin when the
+    // 400 ms crank window expires, which would drop the routing solenoid mid-shift.
     bool garage_held = (target == &_y4 && _y4_garage_owned);
-    if (target->state == STATE_OFF || garage_held) {
+    bool crank_held  = (target == &_y3 && _crank_active);
+    if (target->state == STATE_OFF || garage_held || crank_held) {
         ledcWrite(target->pin, 204);    // ~80% kick (OEM) to snap the valve open, 60ms (see update)
         target->kick_start_tick = xTaskGetTickCount();
         target->state = STATE_KICKING;
         if (garage_held) _y4_garage_owned = false;   // shift took Y4 over from the garage pulse
+        if (crank_held)  _crank_active = false;      // shift took Y3 over from the crank pulse
     }
 }
 

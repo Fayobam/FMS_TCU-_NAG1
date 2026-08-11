@@ -189,9 +189,82 @@ bench traces.
 
 ---
 
+## F12–F14 — from the 2026-08 gear-control walkthrough
+
+Found by re-walking "does the gear the firmware BELIEVES it is in always match the
+gear the gearbox is ACTUALLY in?" — the property the routing table depends on.
+All three landed together with the native test harness that proves them.
+
+### F12 — A timed-out shift must not be recorded as a success  [NEW, highest risk]
+**Status:** DONE (2026-08-11). `finishShift()` was reached unconditionally from
+BOTH 600 ms phase backstops (`PHASE_INERTIA`, `PHASE_CATCH`), asserting
+`current_gear = target_gear` with no evidence the ratio ever moved. The normal
+exits *are* verified (`synced`, `at_sync`), so the hole was exactly and only the
+two timeouts. A failed shift (weak line, cold ATF, lazy valve, failing solenoid)
+therefore left the label lying about the box — and the label picks the routing
+solenoid for the NEXT shift, which is the R1 cross-apply hazard F1 exists to
+prevent. F1 did **not** cover this: nothing set `_gear_resync_pending`.
+**Fix:** new `abandonShift()` — keep the old label, revert `target_gear` to it,
+mark the label unverified (`_gear_resync_pending`), trip `DTC_SHIFT_UNVERIFIED`,
+and skip adaptation (a shift that never proved itself teaches nothing). The
+resync deadline moved to its own `_resync_ready_ms` so the unverified case can
+settle in 250 ms without borrowing `_engage_grace_until_ms` — reusing that would
+have re-opened the lever window and dropped line to P/N standby duties mid-drive.
+**Note:** the "limp will catch it" mitigation does NOT hold. Measured on the
+harness: a failed 4-3 leaves turbine 500 vs expected 743 — a 243 rpm mismatch
+that never reaches limp's 300 rpm threshold. On close-ratio pairs nothing
+detected the failure at all.
+
+### F13 — Refuse a shift with no routing solenoid  [NEW, latent]
+**Status:** DONE (2026-08-11). `getRoutingSolenoidForShift()` returns 0 for any
+non-adjacent pair; `fireShiftSolenoid(0)` is a silent no-op, but `beginShift()`
+continued, ran every phase and asserted the new gear — a "shift" with no coil
+ever energised. Not reachable today (all six call sites use `current ± 1`), but
+unguarded for any future caller. **Fix:** validate the routing pin at the top of
+`beginShift()`, before any state is mutated.
+
+### F14 — Boot Y3 crank pulse must not swallow a shift  [was an F9 honourable mention]
+**Status:** DONE (2026-08-11). Same class as the Y4 garage-pulse bug already
+fixed: during the 400 ms conditioning pulse Y3 sits in `STATE_HOLDING`, and
+`fireShiftSolenoid()` only acted on `STATE_OFF`, so a 1-2 / 4-5 / 2-1 / 5-4 shift
+in that window was silently dropped — and `update()` would then force Y3 off at
+the 400 ms mark anyway. **Fix:** a real shift pre-empts the crank pulse and
+clears `_crank_active`, mirroring the garage-Y4 steal.
+
+---
+
+## Host test harness (2026-08-11)
+
+`pio test -e native` — 10 tests, all green. Adopted from the OPEN8HP approach
+(`lib/` compiled for `platform = native` + unity). 7226 needed no restructuring:
+`ShiftScheduler::update()` is already a pure function of `telemetry` + time + an
+injected `SolenoidDriver*`, so only the platform needed faking.
+
+- `test/stubs/Arduino.h` — time is a variable (`g_now_ms`), so a 600 ms backstop
+  runs in microseconds and is exactly reproducible; PWM/GPIO writes are recorded
+  in `g_pwm[]`/`g_dio[]`, which is the assertion surface (which coil was kicked).
+- `test/stubs/Preferences.h` — in-memory NVS; every run exercises the blank-flash
+  seeding path.
+- The native env compiles the REAL `SolenoidDriver`/`EngineProfile`/
+  `AdaptiveMemory`/`DtcManager`, so kick-and-hold, ownership steals and the
+  inverted pressure mapping are all under test. Hardware-bound units
+  (`main`/`WebManager`/`SpeedReader`/`InputManager`) are excluded — bench, not host.
+- `ShiftScheduler.h` flips its `private:` to `public:` under `-D UNIT_TEST` only.
+
+**Caveat, stated plainly:** this proves the state machine commands what was
+intended. It says nothing about whether 88 % SPC for 180 ms actually strokes the
+K3 piston — that stays bench and road work.
+
+**Lesson worth keeping:** three of these tests first passed for the WRONG reason.
+Slip-limp was silently rescuing the bad gear label (de-energise + reclassify from
+ratio), so the bug was invisible until the tests asserted at shift completion
+instead of after a fixed 2 s. A test that passes because a safety net caught the
+fault is not a passing test.
+
 ## Done
 
-(nothing yet)
+- F1, F2, F3, F4 (2026-07-01) — see entries above.
+- F12, F13, F14 + native test harness (2026-08-11).
 
 ## Discovered during work
 
