@@ -107,29 +107,9 @@ class ShiftScheduler {
     unsigned long _eng_roc_sample_ms;
     float         _eng_rpm_per_s;
 
-    // Cruise (holding) line pressure, pressure-% (100 = de-energized = max).
-    //
-    // REBASED on dueATC's road-tuned #MPC_normalDrive (see Reference/DUEATC_CALIBRATION_NOTES.md
-    // §3), which is the same solenoid, same inverted convention, and was actually driven.
-    // Its 60 °C row is 70/70/73/100/100/100 across load 0/20/40/60/80/100 — i.e. a FLOOR OF 70
-    // at light load, saturating by ~60 % load. Our previous floor was 20-38, inferred rather
-    // than driven, and low light-load line is what lets a clutch slip when an unexpected
-    // torque spike arrives — exactly what a blower delivers off-idle, on a box already at its
-    // 330 Nm rating.
-    //
-    // Their map has no gear axis; the modest per-gear step (+2 per gear) is ours and is kept.
-    // Temperature is NOT in this table — cruiseLinePressure() applies the ATF multiplier, which
-    // reproduces their cold row (70 x 1.30 = 91, and their -20 °C row is 100).
-    // SPORT BIAS: the 73->100 ramp is pulled one bin earlier than a literal interpolation of
-    // their curve, so full clamp arrives sooner under rising load.
-    // Load axis: 16 bins of ~12.5 computeLoad units (bin 8 ~ load 100 ~ their column 100).
-    const uint8_t HOLDING_PRESSURE_MAP[5][16] = {
-        { 70, 70, 70, 72, 75, 90, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100 }, // G1
-        { 72, 72, 72, 74, 77, 92, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100 }, // G2
-        { 74, 74, 74, 76, 79, 94, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100 }, // G3
-        { 76, 76, 76, 78, 81, 96, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100 }, // G4
-        { 78, 78, 78, 80, 83, 98, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100 }  // G5
-    };
+    // Cruise (holding) line pressure now lives in the NVS-backed, web-editable
+    // TuneOverlay (tuneOverlay.lineMap(gear_idx, load_idx)). Its compile-time
+    // defaults — and the dueATC provenance for them — are in TuneOverlay.cpp.
 
     void calculateLinePressure();             // CRUISING line pressure (holding map + ATF)
     float cruiseLinePressure();               // the cruise MPC value, for max(cruise, …) during shifts

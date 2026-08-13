@@ -5,6 +5,7 @@
 // ============================================================================
 #include "WebManager.h"
 #include "EngineProfile.h"
+#include "TuneOverlay.h"
 #include "DtcManager.h"
 
 // Telemetry broadcast period. Core 0 only — fully decoupled from the 1 kHz shift
@@ -185,6 +186,63 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         engineProfile.save();
         engineProfile.applyTransVariant();   // push ratio/K change into g_trans live
         Serial.println("Engine profile updated via Web!");
+        return;
+    }
+
+    // ------------------------------------------------------------------------
+    // PARAMETER REGISTRY (generic, schema-driven — see TuneOverlay.h).
+    // param.list  -> schema + current values for every registered parameter
+    // param.set   -> {id,row,col,val}, range-checked in TuneOverlay::paramSet
+    // param.persist / param.reset
+    // Adding a parameter needs NO change here or in the dashboard JS.
+    // ------------------------------------------------------------------------
+    if (cmd == "param.list") {
+        // Sent one parameter per frame: the line-pressure table alone is 80 cells,
+        // and a single document with every schema + values would blow the buffer.
+        uint8_t n = TuneOverlay::paramCount();
+        for (uint8_t i = 0; i < n; i++) {
+            const ParamDesc& p = TuneOverlay::paramDesc(i);
+            JsonDocument resp;
+            resp["type"] = "param";
+            resp["idx"]  = i;
+            resp["n"]    = n;
+            resp["id"]   = p.id;
+            resp["name"] = p.name;
+            resp["group"]= p.group;
+            resp["kind"] = (uint8_t)p.kind;
+            resp["min"]  = p.vmin;
+            resp["max"]  = p.vmax;
+            resp["rows"] = p.rows;
+            resp["cols"] = p.cols;
+            resp["unit"] = p.unit;
+            resp["help"] = p.help;
+            JsonArray v = resp["v"].to<JsonArray>();
+            for (uint8_t r = 0; r < p.rows; r++)
+                for (uint8_t c = 0; c < p.cols; c++) v.add(tuneOverlay.paramGet(i, r, c));
+            char buf[1600];
+            size_t len = serializeJson(resp, buf, sizeof(buf));
+            if (len < sizeof(buf) - 1) ws.textAll(buf, len);
+            else Serial.printf("param.list: '%s' truncated — shorten its help text\n", p.id);
+        }
+        return;
+    }
+    else if (cmd == "param.set") {
+        uint8_t idx = (uint8_t)doc["idx"].as<int>();
+        uint8_t row = (uint8_t)doc["row"].as<int>();
+        uint8_t col = (uint8_t)doc["col"].as<int>();
+        int16_t val = (int16_t)doc["val"].as<int>();
+        if (!tuneOverlay.paramSet(idx, row, col, val))
+            Serial.printf("param.set rejected: idx=%u r=%u c=%u v=%d\n", idx, row, col, val);
+        return;   // live immediately; call param.persist to make it survive a reboot
+    }
+    else if (cmd == "param.persist") {
+        tuneOverlay.save();
+        Serial.println("Tune overlay persisted to NVS.");
+        return;
+    }
+    else if (cmd == "param.reset") {
+        tuneOverlay.resetToDefaults();
+        Serial.println("Tune overlay reset to compile-time defaults.");
         return;
     }
 

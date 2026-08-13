@@ -8,6 +8,7 @@
 #include "EngineProfile.h"
 #include "DtcManager.h"
 #include "AutoShiftMap.h"
+#include "TuneOverlay.h"
 
 ShiftScheduler::ShiftScheduler(SolenoidDriver* solenoids, AdaptiveMemory* adaptives) {
     _solenoids = solenoids;
@@ -90,7 +91,7 @@ float ShiftScheduler::cruiseLinePressure() {
     uint8_t g = (telemetry.prnd_state == 'R') ? 2 : telemetry.current_gear;
     uint8_t gear_idx = constrain(g - 1, 0, 4);
     uint8_t load_idx = loadToBin(computeLoad(telemetry.tps_pct, telemetry.map_kpa));
-    float p = HOLDING_PRESSURE_MAP[gear_idx][load_idx];
+    float p = tuneOverlay.lineMap(gear_idx, load_idx);
     if (telemetry.engine_rpm < 1200.0f) p += 10.0f;
     // Cold ATF is viscous (slow fill); hot ATF leaks past seals — both need MORE pressure.
     float atf = telemetry.atf_temp_c, m = 1.0f;
@@ -370,10 +371,11 @@ void ShiftScheduler::classifyAndProfile(uint8_t from, uint8_t to, bool is_upshif
                 // Theirs is ONE pressure for the whole shift; ours is the torque phase and
                 // then ramps through INERTIA, so this is the ramp's starting point.
                 // SPORT BIAS: +2 on the floor and a slightly steeper slope than their fit.
-                _apply_pct = (uint8_t)constrain(52.0f + 0.9f * load, 0.0f, 100.0f);
+                // Live values (floor/slope) come from the web-editable TuneOverlay.
+                _apply_pct = (uint8_t)constrain(tuneOverlay.applyPct(load), 0.0f, 100.0f);
             }
-            _inertia_slope = 2.0f + 0.02f * load;                       // %/20ms tick
-            _inertia_target_ms = (uint16_t)autoMapInterp(INERTIA_TARGET_MS, load);
+            _inertia_slope     = tuneOverlay.inertiaSlope(load);        // %/20ms tick
+            _inertia_target_ms = tuneOverlay.inertiaTargetMs(load);
         } else {
             _fill_p = (uint8_t)constrain((int)base_fill_p - 15, 0, 100);
             _fill_t_ms = (base_fill_t > 20) ? (base_fill_t - 20) : 0;
@@ -1002,12 +1004,12 @@ void ShiftScheduler::finishShift() {
 // a cold morning. Anchors derived from dueATC's driven solenoid-hold map (see
 // Reference/DUEATC_CALIBRATION_NOTES.md §1).
 uint16_t ShiftScheduler::phaseBackstopMs() const {
+    uint16_t hot = tuneOverlay.backstopHotMs(), cold = tuneOverlay.backstopColdMs();
     float atf = telemetry.atf_temp_c;
-    if (atf <= 0.0f) return SHIFT_BACKSTOP_COLD_MS;
-    if (atf >= SHIFT_BACKSTOP_HOT_C) return SHIFT_BACKSTOP_HOT_MS;
+    if (atf <= 0.0f) return cold;
+    if (atf >= SHIFT_BACKSTOP_HOT_C) return hot;
     float f = atf / SHIFT_BACKSTOP_HOT_C;                 // 0 at 0 C, 1 at 60 C
-    return (uint16_t)(SHIFT_BACKSTOP_COLD_MS +
-                      (float)(SHIFT_BACKSTOP_HOT_MS - SHIFT_BACKSTOP_COLD_MS) * f);
+    return (uint16_t)((float)cold + ((float)hot - (float)cold) * f);
 }
 
 bool ShiftScheduler::shiftProvedByRatio() const {

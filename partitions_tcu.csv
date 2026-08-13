@@ -1,0 +1,24 @@
+# 7226 TCU partition table — single-app layout.
+#
+# This firmware has NO OTA (no ArduinoOTA / Update.h / esp_ota anywhere), so the
+# default table's second 1.25 MB app slot was dead weight while the app partition
+# sat at 86 % full. Reclaiming it:
+#     app     1.25 MB -> 2.00 MB   (was 86 % full, now ~54 %)
+#     spiffs  1.40 MB -> 1.875 MB  (payload is ~688 KB: index.html + three.min.js)
+#
+# NVS STAYS AT 0x9000 / 0x5000 — byte-identical to default.csv — so the stored
+# engine profile, adaptation cells and DTC counts SURVIVE this change.
+#
+# The SPIFFS offset DOES move, so the filesystem image must be re-uploaded ONCE
+# after flashing this table:  pio run -t uploadfs
+#
+# coredump: the 1 kHz physics loop runs a panic-triggering task watchdog, so a
+# stall reboots the chip. This 64 KB region lets that panic be captured to flash
+# and read back later instead of being lost with the serial buffer.
+#
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x5000
+otadata,    data, ota,      0xe000,   0x2000
+app0,       app,  ota_0,    0x10000,  0x200000
+spiffs,     data, spiffs,   0x210000, 0x1E0000
+coredump,   data, coredump, 0x3F0000, 0x10000

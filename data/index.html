@@ -81,6 +81,7 @@
         <button class="tab active" onclick="switchTab('dashboard')">Telemetry</button>
         <button class="tab" onclick="switchTab('engine')">Engine Profile</button>
         <button class="tab" onclick="switchTab('tuner')">Adaptation</button>
+        <button class="tab" onclick="switchTab('params')">Shift Feel</button>
         <button class="tab" onclick="switchTab('shift')">Shift View</button>
         <button class="tab" onclick="switchTab('threeD')">3D</button>
         <button class="tab" onclick="switchTab('gearbox')">Gearbox 3D</button>
@@ -273,6 +274,25 @@
         <div id="ep-fill" style="display:grid; grid-template-columns:repeat(4,1fr); gap:0.6rem; margin-top:0.4rem;"></div>
         <div style="margin-top:0.8rem; font-size:0.7rem; color:var(--slate-400); font-weight:700;">Clutch pressure model — friction numerator + return spring (mBar), oncoming &amp; off-going, per shift</div>
         <div id="ep-clutch" style="display:grid; grid-template-columns:repeat(4,1fr); gap:0.6rem; margin-top:0.4rem;"></div>
+    </main>
+
+    <!-- SHIFT FEEL (generic parameter registry) TAB -->
+    <main id="tab-params" class="tab-content glass-panel" style="flex-grow:1;">
+        <div class="tuner-controls">
+            <span style="font-size:0.8rem; color:var(--slate-300); font-weight:700;">Shift Feel — live calibration</span>
+            <button onclick="requestParams()">Fetch from TCU</button>
+            <button class="primary" onclick="persistParams()">Save to TCU</button>
+            <button onclick="resetParams()" style="border-color:var(--rose); color:var(--rose);">Reset to defaults</button>
+        </div>
+        <div style="font-size:0.65rem; color:var(--slate-500); margin-bottom:0.8rem; line-height:1.5;">
+            Edits apply <strong>immediately</strong> to the running gearbox — <em>Save</em> only makes them
+            survive a reboot, and <em>Reset</em> restores the documented defaults. Every editor here is
+            generated from the firmware's own parameter schema (name, range, units, help), so the firmware
+            is the single source of truth. Hover ⓘ for what each one does.<br>
+            Safety guards (money-shift ceiling, overrev lead, sensor-trust windows) are deliberately
+            <strong>not</strong> exposed — a wrong value there breaks a gearbox, and they are not feel knobs.
+        </div>
+        <div id="param-groups"></div>
     </main>
 
     <!-- SHIFT CHART TAB -->
@@ -633,6 +653,111 @@
         }
 
         // ----------------------------------------------------
+        // SHIFT FEEL — generic, schema-driven parameter editors.
+        // The firmware sends one `param` frame per registered parameter carrying its
+        // schema (kind/min/max/rows/cols/unit/help) AND its current values, so adding
+        // a parameter in firmware needs NO change here. Kinds: 0=Scalar 1=Curve1d 2=Table2d.
+        // ----------------------------------------------------
+        const PARAM_ROW_LABELS = { 'line.map': ['G1','G2','G3','G4','G5'] };
+        const PARAM_COL_LABELS = {
+            'line.map':       Array.from({length:16}, (_,i) => 'L'+i),
+            'inertia.target': ['0','10','20','30','40','50','60','70','80','90','100'],
+        };
+        let params = [];
+
+        function requestParams(){ params = []; ws.send(JSON.stringify({ cmd: "param.list" })); }
+        function persistParams(){
+            ws.send(JSON.stringify({ cmd: "param.persist" }));
+            flashBtn(event.target, "Saved!");
+        }
+        function resetParams(){
+            if(!confirm("Reset ALL shift-feel parameters to the firmware defaults?")) return;
+            ws.send(JSON.stringify({ cmd: "param.reset" }));
+            setTimeout(requestParams, 200);
+        }
+        function flashBtn(btn, txt){
+            const o = btn.innerText, ob = btn.style.background;
+            btn.innerText = txt; btn.style.background = "var(--emerald)";
+            setTimeout(()=>{ btn.innerText = o; btn.style.background = ob; }, 1800);
+        }
+
+        // Push one cell edit. Applies live on the TCU; persistence is a separate step.
+        function sendParam(idx, row, col, val){
+            ws.send(JSON.stringify({ cmd:"param.set", idx, row, col, val }));
+        }
+
+        function paramCell(p, r, c){
+            const v = p.v[r * p.cols + c];
+            const inp = document.createElement('input');
+            inp.type = 'number'; inp.className = 'grid-cell';
+            inp.value = v; inp.min = p.min; inp.max = p.max;
+            inp.addEventListener('change', () => {
+                let nv = parseInt(inp.value);
+                if (isNaN(nv)) nv = v;
+                nv = Math.max(p.min, Math.min(p.max, nv));   // mirrors the firmware clamp
+                inp.value = nv;
+                p.v[r * p.cols + c] = nv;
+                sendParam(p.idx, r, c, nv);
+                inp.style.borderColor = 'var(--emerald)';
+                setTimeout(()=>{ inp.style.borderColor = 'var(--slate-500)'; }, 700);
+            });
+            return inp;
+        }
+
+        function renderParams(){
+            const host = document.getElementById('param-groups');
+            host.innerHTML = '';
+            const groups = [...new Set(params.map(p => p.group))];
+            for (const g of groups) {
+                const sec = document.createElement('div');
+                sec.style.marginBottom = '1.4rem';
+                sec.innerHTML = `<div class="label" style="color:var(--cyan); margin-bottom:0.5rem;">${g}</div>`;
+
+                // Scalars in this group share one compact row.
+                const scalars = params.filter(p => p.group === g && p.kind === 0);
+                if (scalars.length) {
+                    const wrap = document.createElement('div');
+                    wrap.style.cssText = 'display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:0.6rem; margin-bottom:0.8rem;';
+                    for (const p of scalars) {
+                        const lab = document.createElement('label');
+                        lab.className = 'ep-field';
+                        lab.title = p.help;
+                        lab.innerHTML = `<span>${p.name} <span style="color:var(--slate-500)">(${p.unit})</span> ⓘ</span>`;
+                        lab.appendChild(paramCell(p, 0, 0));
+                        wrap.appendChild(lab);
+                    }
+                    sec.appendChild(wrap);
+                }
+
+                // Curves and tables each get their own labelled grid.
+                for (const p of params.filter(p => p.group === g && p.kind !== 0)) {
+                    const box = document.createElement('div');
+                    box.style.marginBottom = '0.9rem';
+                    box.innerHTML = `<div style="font-size:0.7rem;font-weight:700;color:var(--slate-300);margin-bottom:0.3rem;"
+                        title="${p.help}">${p.name} <span style="color:var(--slate-500);font-weight:400;">(${p.unit}) ⓘ</span></div>`;
+                    const cont = document.createElement('div');
+                    cont.className = 'grid-container';
+                    const grid = document.createElement('div');
+                    grid.className = 'tuner-grid';
+                    grid.style.gridTemplateColumns = `70px repeat(${p.cols}, 58px)`;
+
+                    const cols = PARAM_COL_LABELS[p.id] || Array.from({length:p.cols},(_,i)=>String(i));
+                    const rows = PARAM_ROW_LABELS[p.id] || Array.from({length:p.rows},(_,i)=>String(i));
+                    grid.innerHTML = '<div class="grid-header"></div>' +
+                        cols.map(c=>`<div class="grid-header">${c}</div>`).join('');
+                    for (let r = 0; r < p.rows; r++) {
+                        const rh = document.createElement('div');
+                        rh.className = 'grid-header'; rh.textContent = rows[r];
+                        grid.appendChild(rh);
+                        for (let c = 0; c < p.cols; c++) grid.appendChild(paramCell(p, r, c));
+                    }
+                    cont.appendChild(grid); box.appendChild(cont); sec.appendChild(box);
+                }
+                host.appendChild(sec);
+            }
+        }
+
+        // ----------------------------------------------------
         // WEBSOCKET LOGIC (V6.1)
         // ----------------------------------------------------
         // Auto-(re)connecting WebSocket: survives a TCU reboot / flash / WiFi drop
@@ -654,6 +779,7 @@
             lastMsgTime = Date.now();
             requestCells();     // adaptation trims
             requestProfile();   // engine torque table + cal
+            requestParams();    // shift-feel registry (schema + values)
             requestDtcs();      // stored fault codes
         }
 
@@ -767,6 +893,12 @@
             }
             else if (data.type === "profile_data") {
                 renderProfile(data);
+            }
+            else if (data.type === "param") {
+                // One frame per parameter; render once the whole set has landed.
+                data.idx = data.idx | 0;
+                params[data.idx] = data;
+                if (params.filter(Boolean).length >= (data.n | 0)) renderParams();
             }
             else if (data.type === "shift_trace") {
                 onShiftTrace(data);

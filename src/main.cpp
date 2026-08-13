@@ -17,6 +17,7 @@
 #include "ShiftScheduler.h"
 #include "WebManager.h"
 #include "DtcManager.h"
+#include "TuneOverlay.h"
 
 // ============================================================================
 // 1. GLOBAL OBJECTS
@@ -46,6 +47,7 @@ void setup() {
     Serial.println("Booting FMS 722.6 TCU V9 (W5A330 / M111.985 + TVS1320)...");
 
     engineProfile.begin();   // before inputs (TPS/MAP cal) and scheduler (torque model)
+    tuneOverlay.begin();     // before the scheduler: it reads line/apply/inertia/backstop
     solenoids.begin();
     speedReader.begin();
     inputManager.begin();
