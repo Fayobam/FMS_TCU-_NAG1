@@ -139,7 +139,7 @@ class ShiftScheduler {
     uint8_t classGearFromRatio();             // nearest-ratio gear classifier (limp/abort)
     float getTargetRatio(uint8_t gear);
     uint8_t getRoutingSolenoidForShift(uint8_t from_gear, uint8_t to_gear);
-    const DriveMode& currentMode() const;     // lever-selected drive-mode knob bundle
+    DriveMode currentMode() const;   // by value: knobs come from the NVS overlay     // lever-selected drive-mode knob bundle
 
   public:
     ShiftScheduler(SolenoidDriver* solenoids, AdaptiveMemory* adaptives);

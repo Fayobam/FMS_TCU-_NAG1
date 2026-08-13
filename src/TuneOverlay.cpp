@@ -4,6 +4,7 @@
 // ============================================================================
 #include "TuneOverlay.h"
 #include "TCU_Data.h"
+#include "AutoShiftMap.h"   // AUTO_UPSHIFT_KMH / AUTO_DOWNSHIFT_KMH defaults + autoMapInterp
 
 // ----------------------------------------------------------------------------
 // COMPILE-TIME DEFAULTS — the seed source, and the documentation of record.
@@ -40,7 +41,29 @@ void TuneOverlay::seedDefaults() {
     d.inertia_slope_load_x1000 = 20;    // +0.020 %/tick per load%
     d.backstop_hot_ms          = SHIFT_BACKSTOP_HOT_MS;
     d.backstop_cold_ms         = SHIFT_BACKSTOP_COLD_MS;
+
+    memcpy(d.up_kmh, AUTO_UPSHIFT_KMH,   sizeof(d.up_kmh));
+    memcpy(d.dn_kmh, AUTO_DOWNSHIFT_KMH, sizeof(d.dn_kmh));
+
+    for (uint8_t i = 0; i < TUNE_MODES; i++) {
+        d.dm_firmness_x100[i] = (uint8_t)(DRIVE_MODES[i].firmness       * 100.0f + 0.5f);
+        d.dm_shiftpt_x100[i]  = (uint8_t)(DRIVE_MODES[i].shift_pt_scale * 100.0f + 0.5f);
+        d.dm_tcc_open_tps[i]  = (uint8_t)DRIVE_MODES[i].tcc_open_tps;
+        d.dm_launch_gear[i]   = DRIVE_MODES[i].launch_gear;
+        d.dm_auto_shift[i]    = DRIVE_MODES[i].auto_shift ? 1 : 0;
+        d.dm_lug_guard[i]     = DRIVE_MODES[i].lug_guard  ? 1 : 0;
+        d.dm_torque_cut[i]    = DRIVE_MODES[i].torque_cut ? 1 : 0;
+    }
     d.magic = TUNE_MAGIC;
+}
+
+// The schedule tables are stored exactly as AutoShiftMap.h lays them out, so the
+// same 11-point TPS interpolation applies.
+float TuneOverlay::upshiftKmh(uint8_t pair, float tps) const {
+    return autoMapInterp(d.up_kmh[pair > (TUNE_PAIRS - 1) ? (TUNE_PAIRS - 1) : pair], tps);
+}
+float TuneOverlay::downshiftKmh(uint8_t pair, float tps) const {
+    return autoMapInterp(d.dn_kmh[pair > (TUNE_PAIRS - 1) ? (TUNE_PAIRS - 1) : pair], tps);
 }
 
 // Defined AFTER the default tables above. Those are const PODs with constant
@@ -84,6 +107,9 @@ uint16_t TuneOverlay::inertiaTargetMs(float load) const {
 enum : uint8_t {
     P_LINE_MAP = 0, P_INERTIA_TARGET, P_APPLY_FLOOR, P_APPLY_SLOPE,
     P_INERTIA_SLOPE, P_INERTIA_SLOPE_LOAD, P_BACKSTOP_HOT, P_BACKSTOP_COLD,
+    P_UP_KMH, P_DN_KMH,
+    P_DM_FIRMNESS, P_DM_SHIFTPT, P_DM_TCCOPEN, P_DM_LAUNCH,
+    P_DM_AUTO, P_DM_LUG, P_DM_TQCUT,
     P_COUNT
 };
 
@@ -119,6 +145,43 @@ static const ParamDesc PARAMS[P_COUNT] = {
     { "backstop.cold", "Phase backstop (cold)", "Safety timing", PK_SCALAR, 300, 4000, 1, 1, "ms",
       "Same, at ATF <= 0C, interpolated in between. Cold oil fills slowly — a road-tuned 722.6 holds its "
       "shift solenoid up to 2000ms when cold vs 900ms hot, so this must be generous." },
+
+    { "auto.up", "Upshift speeds", "Auto schedule", PK_TABLE2D, 3, 250, TUNE_PAIRS, TUNE_TPS_PTS, "km/h",
+      "Road speed at which an automatic upshift fires. Rows = 1-2 / 2-3 / 3-4 / 4-5, cols = TPS% "
+      "(0,10,...,100). Scaled by the mode's shift-point factor. Must stay ABOVE the matching "
+      "downshift row or the box will hunt between two gears." },
+
+    { "auto.dn", "Downshift speeds", "Auto schedule", PK_TABLE2D, 2, 250, TUNE_PAIRS, TUNE_TPS_PTS, "km/h",
+      "Road speed below which an automatic downshift fires. Rows = 2-1 / 3-2 / 4-3 / 5-4, cols = TPS%. "
+      "The gap to the upshift row IS the anti-hunting hysteresis — keep a healthy margin. "
+      "Auto downshifts floor at 2nd; 1st is reached by the launch drop or a paddle." },
+
+    { "mode.firmness", "Firmness", "Drive modes (D/4/3/2/1)", PK_CURVE1D, 50, 200, 1, TUNE_MODES, "x0.01",
+      "Multiplies apply pressure and ramp rate per lever position (value/100). 100 = baseline. "
+      "Higher = firmer, faster shifts. Does NOT scale fill — that only seats the piston." },
+
+    { "mode.shiftpt", "Shift-point scale", "Drive modes (D/4/3/2/1)", PK_CURVE1D, 50, 200, 1, TUNE_MODES, "x0.01",
+      "Stretches the whole auto schedule per lever position (value/100). Below 100 upshifts early "
+      "(economy); above 100 holds gears longer (sport)." },
+
+    { "mode.tccopen", "TCC open above TPS", "Drive modes (D/4/3/2/1)", PK_CURVE1D, 0, 100, 1, TUNE_MODES, "%",
+      "Throttle above which the converter clutch is forced open. Lower = unlocks sooner = more slip "
+      "and a sportier feel, at the cost of some heat and efficiency." },
+
+    { "mode.launch", "Launch gear", "Drive modes (D/4/3/2/1)", PK_CURVE1D, 1, 2, 1, TUNE_MODES, "gear",
+      "Gear a nearly-stopped car drops to before pulling away. 1 = full 3.93 first ratio; "
+      "2 = the 722.6 hydraulic default, gentler and better on ice." },
+
+    { "mode.auto", "Auto shifting", "Drive modes (D/4/3/2/1)", PK_CURVE1D, 0, 1, 1, TUNE_MODES, "0/1",
+      "1 = the automatic schedule and kickdown run for this lever position; 0 = paddle-only. "
+      "Overrev and lug protection stay active either way." },
+
+    { "mode.lug", "Lug protection", "Drive modes (D/4/3/2/1)", PK_CURVE1D, 0, 1, 1, TUNE_MODES, "0/1",
+      "1 = auto-downshift when the engine bogs under load. Off in RACE so the driver keeps control." },
+
+    { "mode.tqcut", "Request torque cut", "Drive modes (D/4/3/2/1)", PK_CURVE1D, 0, 1, 1, TUNE_MODES, "0/1",
+      "1 = assert the rusEFI shift-retard line during high-load power upshifts. Still gated by the "
+      "ENABLE_TORQUE_CUT build flag, so this does nothing until that wire exists." },
 };
 
 uint8_t          TuneOverlay::paramCount()          { return P_COUNT; }
@@ -138,6 +201,19 @@ int16_t TuneOverlay::paramGet(uint8_t i, uint8_t row, uint8_t col) const {
         case P_INERTIA_SLOPE_LOAD:   return d.inertia_slope_load_x1000;
         case P_BACKSTOP_HOT:         return (int16_t)d.backstop_hot_ms;
         case P_BACKSTOP_COLD:        return (int16_t)d.backstop_cold_ms;
+        case P_UP_KMH:
+            if (row >= TUNE_PAIRS || col >= TUNE_TPS_PTS) return 0;
+            return (int16_t)d.up_kmh[row][col];
+        case P_DN_KMH:
+            if (row >= TUNE_PAIRS || col >= TUNE_TPS_PTS) return 0;
+            return (int16_t)d.dn_kmh[row][col];
+        case P_DM_FIRMNESS:  return (col < TUNE_MODES) ? d.dm_firmness_x100[col] : 0;
+        case P_DM_SHIFTPT:   return (col < TUNE_MODES) ? d.dm_shiftpt_x100[col]  : 0;
+        case P_DM_TCCOPEN:   return (col < TUNE_MODES) ? d.dm_tcc_open_tps[col]  : 0;
+        case P_DM_LAUNCH:    return (col < TUNE_MODES) ? d.dm_launch_gear[col]   : 0;
+        case P_DM_AUTO:      return (col < TUNE_MODES) ? d.dm_auto_shift[col]    : 0;
+        case P_DM_LUG:       return (col < TUNE_MODES) ? d.dm_lug_guard[col]     : 0;
+        case P_DM_TQCUT:     return (col < TUNE_MODES) ? d.dm_torque_cut[col]    : 0;
     }
     return 0;
 }
@@ -159,6 +235,19 @@ bool TuneOverlay::paramSet(uint8_t i, uint8_t row, uint8_t col, int16_t val) {
         case P_INERTIA_SLOPE_LOAD:   d.inertia_slope_load_x1000 = (uint8_t)val;  return true;
         case P_BACKSTOP_HOT:         d.backstop_hot_ms          = (uint16_t)val; return true;
         case P_BACKSTOP_COLD:        d.backstop_cold_ms         = (uint16_t)val; return true;
+        case P_UP_KMH:
+            if (row >= TUNE_PAIRS || col >= TUNE_TPS_PTS) return false;
+            d.up_kmh[row][col] = (uint16_t)val; return true;
+        case P_DN_KMH:
+            if (row >= TUNE_PAIRS || col >= TUNE_TPS_PTS) return false;
+            d.dn_kmh[row][col] = (uint16_t)val; return true;
+        case P_DM_FIRMNESS:  if (col >= TUNE_MODES) return false; d.dm_firmness_x100[col] = (uint8_t)val; return true;
+        case P_DM_SHIFTPT:   if (col >= TUNE_MODES) return false; d.dm_shiftpt_x100[col]  = (uint8_t)val; return true;
+        case P_DM_TCCOPEN:   if (col >= TUNE_MODES) return false; d.dm_tcc_open_tps[col]  = (uint8_t)val; return true;
+        case P_DM_LAUNCH:    if (col >= TUNE_MODES) return false; d.dm_launch_gear[col]   = (uint8_t)val; return true;
+        case P_DM_AUTO:      if (col >= TUNE_MODES) return false; d.dm_auto_shift[col]    = (uint8_t)val; return true;
+        case P_DM_LUG:       if (col >= TUNE_MODES) return false; d.dm_lug_guard[col]     = (uint8_t)val; return true;
+        case P_DM_TQCUT:     if (col >= TUNE_MODES) return false; d.dm_torque_cut[col]    = (uint8_t)val; return true;
     }
     return false;
 }

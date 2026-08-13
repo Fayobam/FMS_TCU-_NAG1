@@ -58,8 +58,20 @@ bool ShiftScheduler::isForwardRange() {
 
 // Lever-selected drive mode (D/4/3/2/1 → COMFORT AUTO … RACE MANUAL). Read live each
 // use so moving the lever re-tunes shift behaviour on the fly.
-const DriveMode& ShiftScheduler::currentMode() const {
-    return DRIVE_MODES[driveModeIndex(telemetry.prnd_state)];
+// Returned BY VALUE: every knob now comes from the web-editable TuneOverlay, so there is
+// no static object to hand back a reference to. DRIVE_MODES supplies the name (and the
+// seed values); the overlay supplies the live ones.
+DriveMode ShiftScheduler::currentMode() const {
+    uint8_t i = driveModeIndex(telemetry.prnd_state);
+    DriveMode m      = DRIVE_MODES[i];
+    m.auto_shift     = tuneOverlay.modeAutoShift(i);
+    m.shift_pt_scale = tuneOverlay.modeShiftPt(i);
+    m.firmness       = tuneOverlay.modeFirmness(i);
+    m.tcc_open_tps   = tuneOverlay.modeTccOpenTps(i);
+    m.lug_guard      = tuneOverlay.modeLugGuard(i);
+    m.torque_cut     = tuneOverlay.modeTorqueCut(i);
+    m.launch_gear    = tuneOverlay.modeLaunchGear(i);
+    return m;
 }
 
 // ----------------------------------------------------------------------------
@@ -499,7 +511,7 @@ void ShiftScheduler::checkAutoShift() {
 
     // Upshift g→g+1 above the (scaled) threshold. (1st is reachable by paddle in auto.)
     if (g >= 1 && g < 5) {
-        float up_kmh = autoMapInterp(AUTO_UPSHIFT_KMH[g - 1], tps) * scale;
+        float up_kmh = tuneOverlay.upshiftKmh(g - 1, tps) * scale;
         if (kmh > up_kmh && beginShift(g + 1, true, "AUTO")) {
             telemetry.last_auto_shift_ms = millis();
             return;
@@ -507,7 +519,7 @@ void ShiftScheduler::checkAutoShift() {
     }
     // Downshift g→g-1 below the (scaled) threshold. Floor at 2nd (1st = paddle-only).
     if (g >= 3 && g <= 5) {
-        float dn_kmh = autoMapInterp(AUTO_DOWNSHIFT_KMH[g - 2], tps) * scale;
+        float dn_kmh = tuneOverlay.downshiftKmh(g - 2, tps) * scale;
         if (kmh < dn_kmh && beginShift(g - 1, false, "AUTO")) {
             telemetry.last_auto_shift_ms = millis();
             return;

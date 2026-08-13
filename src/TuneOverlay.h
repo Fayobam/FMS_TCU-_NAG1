@@ -30,11 +30,14 @@
 #include <Arduino.h>
 #include <Preferences.h>
 
-#define TUNE_MAGIC 0x54554E31u   // 'TUN1' — bump to force a re-seed on layout change
+#define TUNE_MAGIC 0x54554E32u   // 'TUN2' — bump to force a re-seed on layout change
 
 #define TUNE_GEARS      5
 #define TUNE_LOAD_BINS 16
 #define TUNE_LOAD_PTS  11        // 0,10,...,100 % load
+#define TUNE_PAIRS      4        // gear pairs: 1-2, 2-3, 3-4, 4-5
+#define TUNE_TPS_PTS   11        // 0,10,...,100 % TPS
+#define TUNE_MODES      5        // lever D, 4, 3, 2, 1
 
 struct TuneData {
     // --- Cruise (holding) line pressure, pressure-% [gear][load bin] ---
@@ -50,6 +53,19 @@ struct TuneData {
     // --- Phase backstop (ATF-scaled) ---
     uint16_t backstop_hot_ms;
     uint16_t backstop_cold_ms;
+
+    // --- Automatic shift schedule, road km/h by TPS% [pair][tps point] ---
+    uint16_t up_kmh[TUNE_PAIRS][TUNE_TPS_PTS];
+    uint16_t dn_kmh[TUNE_PAIRS][TUNE_TPS_PTS];
+
+    // --- Drive modes, indexed by lever position (D,4,3,2,1) ---
+    uint8_t  dm_firmness_x100[TUNE_MODES];
+    uint8_t  dm_shiftpt_x100[TUNE_MODES];
+    uint8_t  dm_tcc_open_tps[TUNE_MODES];
+    uint8_t  dm_launch_gear[TUNE_MODES];
+    uint8_t  dm_auto_shift[TUNE_MODES];    // 0/1
+    uint8_t  dm_lug_guard[TUNE_MODES];     // 0/1
+    uint8_t  dm_torque_cut[TUNE_MODES];    // 0/1 (still gated by ENABLE_TORQUE_CUT)
 
     uint32_t magic;
 };
@@ -95,6 +111,19 @@ class TuneOverlay {
     uint16_t inertiaTargetMs(float load) const;   // interpolates inertia_target_ms
     uint16_t backstopHotMs()  const { return d.backstop_hot_ms; }
     uint16_t backstopColdMs() const { return d.backstop_cold_ms; }
+
+    // Auto schedule: interpolated road km/h threshold for a gear pair at this TPS.
+    float upshiftKmh(uint8_t pair, float tps)   const;
+    float downshiftKmh(uint8_t pair, float tps) const;
+
+    // Drive-mode knobs (idx = driveModeIndex(prnd)); clamped internally.
+    float   modeFirmness(uint8_t i)   const { return d.dm_firmness_x100[i > 4 ? 4 : i] / 100.0f; }
+    float   modeShiftPt(uint8_t i)    const { return d.dm_shiftpt_x100[i > 4 ? 4 : i]  / 100.0f; }
+    float   modeTccOpenTps(uint8_t i) const { return d.dm_tcc_open_tps[i > 4 ? 4 : i]; }
+    uint8_t modeLaunchGear(uint8_t i) const { return d.dm_launch_gear[i > 4 ? 4 : i]; }
+    bool    modeAutoShift(uint8_t i)  const { return d.dm_auto_shift[i > 4 ? 4 : i] != 0; }
+    bool    modeLugGuard(uint8_t i)   const { return d.dm_lug_guard[i > 4 ? 4 : i]  != 0; }
+    bool    modeTorqueCut(uint8_t i)  const { return d.dm_torque_cut[i > 4 ? 4 : i] != 0; }
 
     // --- registry ---
     static uint8_t          paramCount();

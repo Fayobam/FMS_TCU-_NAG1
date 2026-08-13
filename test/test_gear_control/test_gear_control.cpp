@@ -18,6 +18,8 @@
 #include "EngineProfile.h"
 #include "DtcManager.h"
 #include "ShiftScheduler.h"
+#include "TuneOverlay.h"
+#include <string.h>
 
 // Globals normally defined in main.cpp (which the native env excludes).
 TCU_Telemetry telemetry;
@@ -248,6 +250,46 @@ void test_shift_backstop_stretches_when_cold(void) {
         "a cold shift must be given materially longer before it is called failed");
 }
 
+// Look a parameter up by its wire id rather than hardcoding an index, so reordering
+// the registry cannot silently make this test assert against the wrong knob.
+static uint8_t paramIdx(const char* id) {
+    for (uint8_t i = 0; i < TuneOverlay::paramCount(); i++)
+        if (strcmp(TuneOverlay::paramDesc(i).id, id) == 0) return i;
+    TEST_FAIL_MESSAGE("parameter id not present in the registry");
+    return 0;
+}
+
+// The registry has to reach the RUNNING gearbox — a stored number that nothing reads
+// is worse than no knob at all, because the dashboard would report a change that never
+// happened. Edit the hot backstop through the registry and the same failing shift must
+// give up sooner, with no reboot and no re-seed.
+void test_registry_edit_changes_live_behaviour(void) {
+    const uint8_t idx = paramIdx("backstop.hot");
+    const int16_t original = tuneOverlay.paramGet(idx, 0, 0);
+
+    setupDriving(2, 500.0f);
+    telemetry.atf_temp_c = 80.0f;                  // hot side of the ATF scale
+    telemetry.paddle_up_request = true;
+    uint32_t before = tickUntilShiftEnds(4000);
+
+    TEST_ASSERT_TRUE_MESSAGE(tuneOverlay.paramSet(idx, 0, 0, 350),
+        "an in-range edit must be accepted");
+    TEST_ASSERT_FALSE_MESSAGE(tuneOverlay.paramSet(idx, 0, 0, 5),
+        "an out-of-range edit must be rejected at the boundary, not clamped silently");
+    TEST_ASSERT_EQUAL_INT16_MESSAGE(350, tuneOverlay.paramGet(idx, 0, 0),
+        "the rejected edit must not have disturbed the accepted value");
+
+    setupDriving(2, 500.0f);
+    telemetry.atf_temp_c = 80.0f;
+    telemetry.paddle_up_request = true;
+    uint32_t after = tickUntilShiftEnds(4000);
+
+    TEST_ASSERT_LESS_THAN_UINT32_MESSAGE(before, after,
+        "a registry edit must take effect on the live control loop");
+
+    tuneOverlay.paramSet(idx, 0, 0, original);     // leave the rig as we found it
+}
+
 // THE HAZARD ITSELF. After an unverified 2-3 the box is still in 2nd. If the label
 // says "3rd", the next upshift is dispatched as 3->4 and energises Y4 — the wrong
 // clutch pack, on top of the one already applied (cross-apply / tie-up, review R1).
@@ -328,6 +370,7 @@ int main(int, char**) {
     RUN_TEST(test_downshift_that_never_syncs_must_not_latch_gear);
     RUN_TEST(test_standstill_downshift_still_latches);
     RUN_TEST(test_shift_backstop_stretches_when_cold);
+    RUN_TEST(test_registry_edit_changes_live_behaviour);
     RUN_TEST(test_next_shift_routes_from_the_corrected_gear);
     RUN_TEST(test_shift_during_crank_pulse_is_not_swallowed);
     RUN_TEST(test_shift_takes_y4_over_from_the_garage_pulse);

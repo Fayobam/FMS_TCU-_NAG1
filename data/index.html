@@ -658,10 +658,20 @@
         // schema (kind/min/max/rows/cols/unit/help) AND its current values, so adding
         // a parameter in firmware needs NO change here. Kinds: 0=Scalar 1=Curve1d 2=Table2d.
         // ----------------------------------------------------
-        const PARAM_ROW_LABELS = { 'line.map': ['G1','G2','G3','G4','G5'] };
+        const TPS_PTS   = ['0','10','20','30','40','50','60','70','80','90','100'];
+        const MODE_COLS = ['D','4','3','2','1'];
+        const PARAM_ROW_LABELS = {
+            'line.map': ['G1','G2','G3','G4','G5'],
+            'auto.up':  ['1→2','2→3','3→4','4→5'],
+            'auto.dn':  ['2→1','3→2','4→3','5→4'],
+        };
         const PARAM_COL_LABELS = {
             'line.map':       Array.from({length:16}, (_,i) => 'L'+i),
-            'inertia.target': ['0','10','20','30','40','50','60','70','80','90','100'],
+            'inertia.target': TPS_PTS,
+            'auto.up': TPS_PTS, 'auto.dn': TPS_PTS,
+            'mode.firmness': MODE_COLS, 'mode.shiftpt': MODE_COLS, 'mode.tccopen': MODE_COLS,
+            'mode.launch':   MODE_COLS, 'mode.auto':    MODE_COLS, 'mode.lug':     MODE_COLS,
+            'mode.tqcut':    MODE_COLS,
         };
         let params = [];
 
