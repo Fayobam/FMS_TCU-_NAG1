@@ -137,6 +137,7 @@ class ShiftScheduler {
     void captureTrace();                      // high-rate datalog sample (bench tuning)
     void setSPC(float pct);                   // write _spc_cmd + command solenoid
     void applyShiftMPC();                     // MPC rule during a shift (per class/load)
+    bool shiftProvedByRatio() const;          // did live_ratio actually demonstrate the target?
     void finishShift();                       // ratio proved the target: latch gear, adapt
     void abandonShift(const char* why);       // backstop hit unproven: keep label, force resync
     void evaluateAdaptation();                // class-indexed learning (Phase 5)

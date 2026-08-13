@@ -985,6 +985,15 @@ void ShiftScheduler::finishShift() {
     _current_phase = PHASE_LOCK; _phase_start_tick = xTaskGetTickCount();
 }
 
+// Did the ratio actually demonstrate the target gear? Used by both phase backstops to
+// decide finish-vs-abandon. Below RATIO_OBSERVABLE_MIN_OUTPUT_RPM there is no real
+// ratio to read (see the constant) — trust the command there rather than abandoning a
+// shift we simply cannot see, which is the standstill launch case.
+bool ShiftScheduler::shiftProvedByRatio() const {
+    if (telemetry.output_rpm < RATIO_OBSERVABLE_MIN_OUTPUT_RPM) return true;
+    return fabsf(telemetry.live_ratio - _ratio_target) <= SHIFT_VERIFY_RATIO_TOL;
+}
+
 // A phase backstop expired with the ratio still nowhere near the target: the shift
 // did NOT demonstrably happen (weak line pressure, cold ATF, a lazy valve, a failing
 // solenoid). Asserting the target gear here is what makes the gear label lie — and the
@@ -1085,7 +1094,7 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
                 // Backstop: the speed change never happened. Only claim the gear if the
                 // ratio actually arrived (tolerance is looser than `synced` — a slow but
                 // real shift still counts); otherwise the label stays unverified.
-                if (fabsf(telemetry.live_ratio - _ratio_target) <= SHIFT_VERIFY_RATIO_TOL) finishShift();
+                if (shiftProvedByRatio()) finishShift();
                 else abandonShift("UPSHIFT UNVERIFIED (ratio never reached target)");
             }
             break;
@@ -1149,7 +1158,7 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
                 } else _sync_stable_since_ms = 0;
             }
             if (t >= 600) {                           // backstop — same verify rule as INERTIA
-                if (fabsf(telemetry.live_ratio - _ratio_target) <= SHIFT_VERIFY_RATIO_TOL) finishShift();
+                if (shiftProvedByRatio()) finishShift();
                 else abandonShift("DOWNSHIFT UNVERIFIED (ratio never reached target)");
             }
             break;

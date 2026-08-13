@@ -214,6 +214,20 @@ void test_downshift_that_never_syncs_must_not_latch_gear(void) {
         "FINDING 1: a timed-out downshift was recorded as successful");
 }
 
+// A STOPPED CAR HAS NO OBSERVABLE RATIO. calculateLiveRatio() substitutes the
+// BELIEVED gear's ratio below 50 output rpm, so live_ratio never moves and a
+// standstill shift can never prove itself. That is absence of evidence, NOT
+// evidence of failure — the ratio-verify backstop must not abandon it. If it
+// does, the launch 2->1 that precedes EVERY pull-away is abandoned forever, the
+// car launches in 2nd on a 3.07 diff, and each attempt trips a DTC.
+void test_standstill_downshift_still_latches(void) {
+    setupDriving(2, 0.0f);                    // stopped: output and turbine both 0
+    telemetry.paddle_down_request = true;
+    tickUntilShiftEnds(3000);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, telemetry.current_gear,
+        "a standstill 2->1 must latch 1st — an unobservable ratio is not a failed shift");
+}
+
 // THE HAZARD ITSELF. After an unverified 2-3 the box is still in 2nd. If the label
 // says "3rd", the next upshift is dispatched as 3->4 and energises Y4 — the wrong
 // clutch pack, on top of the one already applied (cross-apply / tie-up, review R1).
@@ -292,6 +306,7 @@ int main(int, char**) {
     RUN_TEST(test_shift_that_syncs_latches_the_new_gear);
     RUN_TEST(test_upshift_that_never_syncs_must_not_latch_gear);
     RUN_TEST(test_downshift_that_never_syncs_must_not_latch_gear);
+    RUN_TEST(test_standstill_downshift_still_latches);
     RUN_TEST(test_next_shift_routes_from_the_corrected_gear);
     RUN_TEST(test_shift_during_crank_pulse_is_not_swallowed);
     RUN_TEST(test_shift_takes_y4_over_from_the_garage_pulse);

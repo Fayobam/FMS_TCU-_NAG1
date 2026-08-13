@@ -215,6 +215,24 @@ harness: a failed 4-3 leaves turbine 500 vs expected 743 — a 243 rpm mismatch
 that never reaches limp's 300 rpm threshold. On close-ratio pairs nothing
 detected the failure at all.
 
+### F12a — F12 regression: standstill shifts have no observable ratio  [caught same day]
+**Status:** DONE (2026-08-11). The start→drive walkthrough immediately after F12
+found that F12 as first written broke **every standstill shift**. Below 50 output
+rpm `calculateLiveRatio()` substitutes the BELIEVED gear's ratio, so `live_ratio`
+never moves and no standstill shift can prove itself — the 600 ms backstop
+abandoned it every time. Worst case is the launch 2→1 that precedes EVERY
+pull-away: abandoned forever, a `DTC_SHIFT_UNVERIFIED` per attempt, and the car
+launching in 2nd on a 3.07 diff. `classGearFromRatio()` is blind below 200 rpm
+too (returns the hydraulic default), so abandoning gained nothing there.
+**Fix:** `shiftProvedByRatio()` — verification applies only above
+`RATIO_OBSERVABLE_MIN_OUTPUT_RPM` (200); below it, trust the command. Absence of
+evidence is not evidence of a failed shift. Regression test
+`test_standstill_downshift_still_latches` locks it in; the at-speed F12 tests
+(output 500) still pass, so the protection is intact where it matters.
+**Lesson:** the F12 tests all drove at 500 output rpm. A guard written against
+one operating point silently inverted at another. Test the boundary, not just
+the case that motivated the change.
+
 ### F13 — Refuse a shift with no routing solenoid  [NEW, latent]
 **Status:** DONE (2026-08-11). `getRoutingSolenoidForShift()` returns 0 for any
 non-adjacent pair; `fireShiftSolenoid(0)` is a silent no-op, but `beginShift()`

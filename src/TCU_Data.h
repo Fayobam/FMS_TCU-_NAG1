@@ -147,6 +147,13 @@ const uint16_t RATIO_EVENT_CONFIRM_MS = 10;
 const uint16_t GEAR_UNVERIFIED_SETTLE_MS = 250;
 // Ratio must be within this of the target for a shift to count as completed.
 const float SHIFT_VERIFY_RATIO_TOL = 0.12f;
+// ...but ONLY where the ratio is real. Below this output speed calculateLiveRatio()
+// substitutes the BELIEVED gear's ratio (there is no measurable output), so live_ratio
+// cannot move and no shift could ever prove itself. That is absence of evidence, not
+// evidence of failure — and classGearFromRatio() is equally blind below the same speed
+// (it returns the hydraulic default), so abandoning there would gain nothing and would
+// kill the standstill launch downshift that precedes every pull-away.
+const float RATIO_OBSERVABLE_MIN_OUTPUT_RPM = 200.0f;
 
 // --- Clutch-speed phase transitions (Phase 1b, opt-in via EngineProfile.cl_speed_transitions) ---
 // Off-going clutch slip above MOVE = fill complete / element releasing; on-coming slip below
