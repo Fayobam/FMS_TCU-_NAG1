@@ -228,6 +228,26 @@ void test_standstill_downshift_still_latches(void) {
         "a standstill 2->1 must latch 1st — an unobservable ratio is not a failed shift");
 }
 
+// Cold ATF fills slowly. dueATC — a controller that was actually driven — holds its
+// shift solenoid up to 2000 ms when cold vs 900 ms hot. Since F12 a backstop hit means
+// abandon + DTC + resync, so a flat 600 ms would spuriously abandon normal cold shifts.
+// The backstop must therefore stretch when cold and stay tight when hot.
+void test_shift_backstop_stretches_when_cold(void) {
+    setupDriving(2, 500.0f);
+    telemetry.atf_temp_c = 80.0f;               // hot
+    telemetry.paddle_up_request = true;
+    uint32_t hot_ms = tickUntilShiftEnds(4000);
+
+    setupDriving(2, 500.0f);
+    telemetry.atf_temp_c = -10.0f;              // cold
+    telemetry.paddle_up_request = true;
+    uint32_t cold_ms = tickUntilShiftEnds(4000);
+
+    TEST_ASSERT_LESS_THAN_UINT32_MESSAGE(4000, cold_ms, "cold shift must still terminate");
+    TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(hot_ms + 400, cold_ms,
+        "a cold shift must be given materially longer before it is called failed");
+}
+
 // THE HAZARD ITSELF. After an unverified 2-3 the box is still in 2nd. If the label
 // says "3rd", the next upshift is dispatched as 3->4 and energises Y4 — the wrong
 // clutch pack, on top of the one already applied (cross-apply / tie-up, review R1).
@@ -307,6 +327,7 @@ int main(int, char**) {
     RUN_TEST(test_upshift_that_never_syncs_must_not_latch_gear);
     RUN_TEST(test_downshift_that_never_syncs_must_not_latch_gear);
     RUN_TEST(test_standstill_downshift_still_latches);
+    RUN_TEST(test_shift_backstop_stretches_when_cold);
     RUN_TEST(test_next_shift_routes_from_the_corrected_gear);
     RUN_TEST(test_shift_during_crank_pulse_is_not_swallowed);
     RUN_TEST(test_shift_takes_y4_over_from_the_garage_pulse);

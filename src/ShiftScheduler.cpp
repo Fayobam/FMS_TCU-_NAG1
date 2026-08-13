@@ -363,10 +363,17 @@ void ShiftScheduler::classifyAndProfile(uint8_t from, uint8_t to, bool is_upshif
                 float mbar = engineProfile.clutchApplyMbar(idx, _input_at_start, telemetry.atf_temp_c);
                 _apply_pct = engineProfile.mbarToPct(mbar);
             } else {
-                _apply_pct = (uint8_t)constrain(20.0f + 0.55f * load, 0.0f, 100.0f);
+                // Torque-phase apply pressure. REBASED on dueATC's driven per-shift SPC maps
+                // (60 C row, load 0/20/40): 1-2 46/69/80, 2-3 66/68/78, 3-4 66/67/88,
+                // 4-5 70/81/80 — i.e. a light-load floor near 50 reaching full clamp by ~60 %
+                // load. The old 20+0.55·load started at 20, far under anything driven.
+                // Theirs is ONE pressure for the whole shift; ours is the torque phase and
+                // then ramps through INERTIA, so this is the ramp's starting point.
+                // SPORT BIAS: +2 on the floor and a slightly steeper slope than their fit.
+                _apply_pct = (uint8_t)constrain(52.0f + 0.9f * load, 0.0f, 100.0f);
             }
             _inertia_slope = 2.0f + 0.02f * load;                       // %/20ms tick
-            _inertia_target_ms = (uint16_t)constrain(400.0f - 1.5f * load, 220.0f, 400.0f);
+            _inertia_target_ms = (uint16_t)autoMapInterp(INERTIA_TARGET_MS, load);
         } else {
             _fill_p = (uint8_t)constrain((int)base_fill_p - 15, 0, 100);
             _fill_t_ms = (base_fill_t > 20) ? (base_fill_t - 20) : 0;
@@ -989,6 +996,20 @@ void ShiftScheduler::finishShift() {
 // decide finish-vs-abandon. Below RATIO_OBSERVABLE_MIN_OUTPUT_RPM there is no real
 // ratio to read (see the constant) — trust the command there rather than abandoning a
 // shift we simply cannot see, which is the standstill launch case.
+// Phase backstop, scaled by ATF temperature. Cold oil fills slowly, so a shift that is
+// still unsynced at the hot backstop may be entirely normal when cold — and since F12 a
+// backstop hit means abandon + DTC + resync, so a flat value risked spurious abandons on
+// a cold morning. Anchors derived from dueATC's driven solenoid-hold map (see
+// Reference/DUEATC_CALIBRATION_NOTES.md §1).
+uint16_t ShiftScheduler::phaseBackstopMs() const {
+    float atf = telemetry.atf_temp_c;
+    if (atf <= 0.0f) return SHIFT_BACKSTOP_COLD_MS;
+    if (atf >= SHIFT_BACKSTOP_HOT_C) return SHIFT_BACKSTOP_HOT_MS;
+    float f = atf / SHIFT_BACKSTOP_HOT_C;                 // 0 at 0 C, 1 at 60 C
+    return (uint16_t)(SHIFT_BACKSTOP_COLD_MS +
+                      (float)(SHIFT_BACKSTOP_HOT_MS - SHIFT_BACKSTOP_COLD_MS) * f);
+}
+
 bool ShiftScheduler::shiftProvedByRatio() const {
     if (telemetry.output_rpm < RATIO_OBSERVABLE_MIN_OUTPUT_RPM) return true;
     return fabsf(telemetry.live_ratio - _ratio_target) <= SHIFT_VERIFY_RATIO_TOL;
@@ -1090,7 +1111,7 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
             if (synced) {
                 if (t < (unsigned long)(0.6f * _inertia_target_ms)) _harsh_detected = true; // too firm
                 finishShift();
-            } else if (t >= 600) {
+            } else if (t >= phaseBackstopMs()) {
                 // Backstop: the speed change never happened. Only claim the gear if the
                 // ratio actually arrived (tolerance is looser than `synced` — a slow but
                 // real shift still counts); otherwise the label stays unverified.
@@ -1157,7 +1178,7 @@ void ShiftScheduler::runShiftPhases(unsigned long t, bool ptick, bool new_sample
                         finishShift();
                 } else _sync_stable_since_ms = 0;
             }
-            if (t >= 600) {                           // backstop — same verify rule as INERTIA
+            if (t >= phaseBackstopMs()) {             // backstop — same verify rule as INERTIA
                 if (shiftProvedByRatio()) finishShift();
                 else abandonShift("DOWNSHIFT UNVERIFIED (ratio never reached target)");
             }

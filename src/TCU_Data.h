@@ -155,6 +155,25 @@ const float SHIFT_VERIFY_RATIO_TOL = 0.12f;
 // kill the standstill launch downshift that precedes every pull-away.
 const float RATIO_OBSERVABLE_MIN_OUTPUT_RPM = 200.0f;
 
+// --- Phase backstop, ATF-scaled (from dueATC's driven shift-solenoid hold map) ---
+// dueATC holds its shift solenoid 900 ms (100 °C) to 2000 ms (-20 °C) — a feedback-free
+// controller must be generous. We close the loop on ratio so we can release much earlier,
+// but our BACKSTOP must not declare a cold shift failed while it is still perfectly normal:
+// since F12 a backstop hit means "abandon + DTC + resync", so a flat 600 ms risked spurious
+// abandons on a cold morning. Linear between these two anchors.
+const uint16_t SHIFT_BACKSTOP_HOT_MS  = 700;    // ATF >= 60 C
+const uint16_t SHIFT_BACKSTOP_COLD_MS = 1400;   // ATF <= 0 C
+const float    SHIFT_BACKSTOP_HOT_C   = 60.0f;
+
+// --- INERTIA duration target by load% (0,10,...,100) ---
+// Shape from dueATC's driven #Shift_time_target_map (800 ms light-load -> 200 ms WOT): a long
+// lazy shift at light throttle, dropping sharply above ~60 % load. Their figure is TOTAL shift
+// time; ours is the INERTIA phase only, so ~250 ms of PREP+FILL+TORQUE is subtracted.
+// SPORT BIAS: light/mid load is pulled shorter than the derived value, and WOT sits at 200 ms
+// (was 250), so the light-vs-hard contrast widens — the part that actually reads as "sporty".
+// Drives the closed-loop ratio schedule and the harshness detector (< 0.6x target = too firm).
+const uint16_t INERTIA_TARGET_MS[11] = { 450, 450, 440, 430, 400, 350, 320, 260, 220, 200, 200 };
+
 // --- Clutch-speed phase transitions (Phase 1b, opt-in via EngineProfile.cl_speed_transitions) ---
 // Off-going clutch slip above MOVE = fill complete / element releasing; on-coming slip below
 // SYNC = synchronised. These read the clutch-speed model (telemetry.on/off_clutch_rpm), which is

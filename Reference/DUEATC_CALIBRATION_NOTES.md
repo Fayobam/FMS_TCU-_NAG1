@@ -139,11 +139,35 @@ Their mid-load SPC values at 60 °C for reference: 1-2 `46/69/80`, 2-3 `66/68/78
 
 ---
 
-## Actions arising
+## Adopted (2026-08-11) — their numbers are now our starting point
 
-1. **ATF-scaled shift backstop** (§1) — the one real risk, and it interacts with code
-   shipped today. Do this first, with a harness test at cold ATF.
-2. **Light-load line pressure** (§3) — bench decision, not a blind change.
-3. **Part-throttle shift duration** (§2) — tune against traces if shifts feel abrupt.
+Owner's call: *"they drove with these numbers, ours are carefully calculated /
+chosen / inferred at best"* — so the driven values become the baseline, with a
+light sport bias. Applied:
 
-Nothing here changes the gear-control logic; it is a calibration and timing cross-check.
+| What | Was (inferred) | Now (dueATC-based + sport bias) |
+|---|---|---|
+| Cruise line, light load | 20–38 % | **70–78 %** (their 70 floor + our per-gear step) |
+| Cruise line, ramp to max | ~bin 9–10 | **bin 6** (one bin earlier than their curve = sport) |
+| Torque-phase apply | `20 + 0.55·load` | **`52 + 0.9·load`** (their SPC floor ≈50, +2 sport) |
+| INERTIA target, light load | 400 ms | **450 ms** (their 800 ms total − our phase overhead) |
+| INERTIA target, WOT | 250 ms | **200 ms** (matches theirs; widens the contrast) |
+| Phase backstop | flat 600 ms | **700 ms hot → 1400 ms cold** (ATF-scaled) |
+
+Where the sport bias went: **contrast, not blanket firmness.** Light-load shifts got
+slightly *lazier* (450 vs 400 ms) because that is what reads as refined when there is no
+torque to mask the event; WOT got quicker (200 vs 250 ms) and full line clamp arrives one
+load bin sooner. Drive-mode `firmness` (1.00–1.35) still multiplies on top.
+
+Unchanged: `fill_p` 80/82/88/78 already matched their per-shift SPC closely (their mid-load
+3-4 is 88, ours is 88), and the coast/downshift profiles were left alone.
+
+### Validate in this order on the bench
+1. **Torque-phase apply** is the largest single jump (20 → 52 at light load) and the most
+   likely to read as harsh. Adaptation's `apply_trim` (±15) will pull it back on detected
+   harshness, but confirm on traces before trusting that loop.
+2. **Light-load line pressure** (20→70) changes pump load and heat, not just feel.
+3. **Cold backstop** — confirm a cold 3-4 completes well inside 1400 ms.
+
+Harness: `pio test -e native` 12/12, incl. `test_shift_backstop_stretches_when_cold`.
+None of this touches the gear-control logic — calibration and timing only.
