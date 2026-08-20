@@ -349,6 +349,16 @@ struct TCU_Telemetry {
     volatile uint8_t safety_event_seq = 0;
     bool reverse_abuse_active = false;   // R selected while moving forward — pressure dumped
 
+    // --- BENCH TEST MODE (session-only, never persisted) ---
+    // Lets a TCU on a bench command real shifts with no gearbox, engine or road-speed
+    // sensors attached: the dashboard supplies the selector position and the paddles,
+    // and the automatic layers (schedule / launch / kickdown / lug) plus slip-limp are
+    // suspended so they cannot fight the operator with every sensor reading zero.
+    // Deliberately NOT persisted - a power cycle always returns to normal driving - and
+    // any real road speed ends it immediately (see ShiftScheduler::update).
+    bool   test_mode = false;
+    int8_t test_mode_cmd = 0;      // Core 0 writes: +1 = enter, -1 = exit, 0 = idle
+
     // --- Selector sensing ---
     bool drive_engaged  = false;  // Scheduler latch: we have completed garage engagement
 

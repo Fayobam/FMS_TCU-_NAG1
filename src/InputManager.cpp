@@ -54,6 +54,10 @@ void InputManager::update() {
 }
 
 void InputManager::decodePRND() {
+    // Bench test mode: the dashboard owns the selector. With no shifter plate attached
+    // these pins float to their pulldowns and decode as an invalid code, so without this
+    // the forced range would simply never take effect.
+    if (telemetry.test_mode) return;
     bool a = digitalRead(PIN_SHIFT_A);
     bool b = digitalRead(PIN_SHIFT_B);
     bool c = digitalRead(PIN_SHIFT_C);

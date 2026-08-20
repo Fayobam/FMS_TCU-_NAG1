@@ -131,6 +131,8 @@ class ShiftScheduler {
     void captureTrace();                      // high-rate datalog sample (bench tuning)
     void setSPC(float pct);                   // write _spc_cmd + command solenoid
     void applyShiftMPC();                     // MPC rule during a shift (per class/load)
+    void enterTestMode();                     // bench mode on (refused while moving)
+    void exitTestMode(const char* why);       // bench mode off + force a gear re-verify
     uint16_t phaseBackstopMs() const;         // INERTIA/CATCH timeout, ATF-scaled
     bool shiftProvedByRatio() const;          // did live_ratio actually demonstrate the target?
     void finishShift();                       // ratio proved the target: latch gear, adapt

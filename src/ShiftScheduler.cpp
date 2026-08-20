@@ -474,7 +474,7 @@ void ShiftScheduler::checkSafetyShifts() {
     // Classic case: driver forgot to downshift from 5th at a traffic light.
     // Floor is 2nd — the hydraulic default — so 1st remains driver's choice.
     // The floor also means this never fires after a D-engagement (which starts in 2nd).
-    if (currentMode().lug_guard &&
+    if (!telemetry.test_mode && currentMode().lug_guard &&
         telemetry.engine_rpm < engineProfile.lugRpm() &&
         telemetry.tps_pct > TPS_LUG_LOAD_PCT &&
         telemetry.current_gear > 2) {
@@ -498,6 +498,7 @@ void ShiftScheduler::checkSafetyShifts() {
 // The map's closed-throttle column doubles as the coast-down schedule.
 // ----------------------------------------------------------------------------
 void ShiftScheduler::checkAutoShift() {
+    if (telemetry.test_mode) return;          // bench: dashboard paddles only
     if (_current_phase != PHASE_CRUISING) return;
     if (!isForwardRange()) return;
     if (!currentMode().auto_shift) return;
@@ -535,6 +536,7 @@ void ShiftScheduler::checkAutoShift() {
 // over from 1st as speed builds. Money-shift guard (in beginShift) + cooldown apply.
 // ----------------------------------------------------------------------------
 void ShiftScheduler::checkLaunchGear() {
+    if (telemetry.test_mode) return;          // bench: dashboard paddles only
     if (_current_phase != PHASE_CRUISING) return;
     if (!isForwardRange() || !telemetry.drive_engaged) return;
     if (millis() < _engage_grace_until_ms) return;                  // let garage engagement settle
@@ -551,6 +553,7 @@ void ShiftScheduler::checkLaunchGear() {
 // back-to-back single shifts across cooldowns (never skip-shifts).
 // ----------------------------------------------------------------------------
 void ShiftScheduler::checkKickdown() {
+    if (telemetry.test_mode) return;          // bench: dashboard paddles only
     if (_current_phase != PHASE_CRUISING) return;
     if (!isForwardRange()) return;
     if (!currentMode().auto_shift) return;   // manual modes: the driver paddles for power
@@ -571,6 +574,7 @@ void ShiftScheduler::checkKickdown() {
 // LIMP MODE  (load-aware threshold + deliberate reset path)
 // ----------------------------------------------------------------------------
 void ShiftScheduler::checkLimpMode(float target_ratio) {
+    if (telemetry.test_mode) { telemetry.is_slipping = false; return; }
     // Engagement grace: after selecting D (especially N->D while moving) the
     // oncoming clutch slips for several hundred ms while it drags the turbine up
     // to output*ratio. That transient is NOT a fault — suppress slip detection
@@ -764,6 +768,20 @@ void ShiftScheduler::update() {
     // dump line pressure, never let the limp handler clamp B3 at max pressure. Also
     // maintains the RP_LOCK solenoid every loop regardless of any other state.
     if (checkReverseInhibit()) return;
+
+    // ---- Bench test mode: consume the dashboard's request, then enforce the exit ----
+    // Placed above every driving layer so the fail-safe exit cannot be starved by a
+    // shift in progress or by limp-mode's early return below.
+    if (telemetry.test_mode_cmd != 0) {
+        int8_t cmd = telemetry.test_mode_cmd;
+        telemetry.test_mode_cmd = 0;
+        if (cmd > 0) enterTestMode();
+        else         exitTestMode("TEST MODE OFF");
+    }
+    // Fail-safe: any genuine road speed ends bench mode at once, whatever the dashboard
+    // last said. This is the guard that matters if the toggle is left on in a car.
+    if (telemetry.test_mode && telemetry.output_rpm > OUTPUT_RPM_MOVING)
+        exitTestMode("TEST MODE OFF (vehicle moved)");
 
     // ---- Limp-mode enforcement + recovery ----
     if (telemetry.is_limp_mode) {
@@ -1015,6 +1033,53 @@ void ShiftScheduler::finishShift() {
 // backstop hit means abandon + DTC + resync, so a flat value risked spurious abandons on
 // a cold morning. Anchors derived from dueATC's driven solenoid-hold map (see
 // Reference/DUEATC_CALIBRATION_NOTES.md §1).
+
+// ============================================================================
+// BENCH TEST MODE
+// A TCU on a bench has no gearbox, no engine and no road-speed signal, so every
+// sensor reads zero. Normal driving logic then blocks or fights the operator: the
+// PRND plate decodes nothing, so isForwardRange() is false and paddles are ignored;
+// and once a range IS forced, the automatic layers see 0 km/h and continuously try
+// to downshift and drop to the launch gear.
+//
+// Test mode substitutes the dashboard for the selector and the paddles, and suspends
+// the automatic layers plus slip-limp. It deliberately does NOT touch the hydraulics:
+// routing solenoids, SPC/MPC ramps and the phase engine run exactly as they do on a
+// car, which is the entire point of a bench test.
+//
+// Safety, in layers:
+//   - refused while the car is actually moving,
+//   - ended the instant any real road speed appears,
+//   - never persisted, so a power cycle always returns to normal driving,
+//   - on exit the gear label is marked unverified, because what was commanded on a
+//     bench says nothing about the gear a real gearbox is now in.
+// ============================================================================
+void ShiftScheduler::enterTestMode() {
+    if (telemetry.output_rpm > OUTPUT_RPM_MOVING) {
+        setSafetyEvent("TEST MODE REFUSED (vehicle is moving)");
+        Serial.println("TEST MODE REFUSED (vehicle is moving)");
+        return;
+    }
+    if (telemetry.test_mode) return;
+    telemetry.test_mode = true;
+    dtcManager.trip(DTC_TEST_MODE);          // provenance: this unit was bench-driven
+    setSafetyEvent("TEST MODE ON - bench only, auto layers suspended");
+    Serial.println("TEST MODE ON - bench only, auto layers suspended");
+}
+
+void ShiftScheduler::exitTestMode(const char* why) {
+    if (!telemetry.test_mode) return;
+    telemetry.test_mode = false;
+    telemetry.paddle_up_request = false;     // drop anything the dashboard queued
+    telemetry.paddle_down_request = false;
+    // The gear label after bench shifting is arbitrary. Force the same re-verify an
+    // abandoned shift uses: F1 blocks all dispatch until the live ratio identifies the
+    // gear, so the first real shift can never route off a bench-era label.
+    _gear_resync_pending = true;
+    _resync_ready_ms     = millis() + GEAR_UNVERIFIED_SETTLE_MS;
+    setSafetyEvent(why);
+    Serial.println(why);
+}
 uint16_t ShiftScheduler::phaseBackstopMs() const {
     uint16_t hot = tuneOverlay.backstopHotMs(), cold = tuneOverlay.backstopColdMs();
     float atf = telemetry.atf_temp_c;

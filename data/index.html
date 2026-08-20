@@ -82,6 +82,7 @@
         <button class="tab" onclick="switchTab('engine')">Engine Profile</button>
         <button class="tab" onclick="switchTab('tuner')">Adaptation</button>
         <button class="tab" onclick="switchTab('params')">Shift Feel</button>
+        <button class="tab" onclick="switchTab('bench')">Bench Test</button>
         <button class="tab" onclick="switchTab('shift')">Shift View</button>
         <button class="tab" onclick="switchTab('threeD')">3D</button>
         <button class="tab" onclick="switchTab('gearbox')">Gearbox 3D</button>
@@ -277,6 +278,57 @@
     </main>
 
     <!-- SHIFT FEEL (generic parameter registry) TAB -->
+
+    <!-- BENCH TEST MODE TAB -->
+    <main id="tab-bench" class="tab-content glass-panel" style="flex-grow:1;">
+        <div id="bench-banner" style="display:none; margin-bottom:1rem; padding:0.8rem 1rem; border-radius:0.75rem;
+             background:rgba(251,146,60,0.14); border:1px solid var(--orange); color:var(--orange);
+             font-weight:800; font-size:0.8rem; letter-spacing:0.03em;">
+            ⚠ TEST MODE ACTIVE — automatic shifting, lug protection and slip-limp are suspended.
+            Bench use only. Ends automatically if the vehicle moves.
+        </div>
+
+        <div style="font-size:0.7rem; color:var(--slate-400); line-height:1.7; margin-bottom:1rem;">
+            Command real shifts with <strong style="color:var(--slate-300)">no sensors attached</strong> — no speed
+            sensors, no engine, no throttle, no shifter plate. The dashboard supplies the selector and the paddles;
+            the solenoids, pressure ramps and phase engine run exactly as they do on a car, which is the point of a
+            bench test.<br>
+            Test mode is <strong style="color:var(--slate-300)">never saved</strong>: a power cycle always returns to
+            normal driving. It refuses to arm while the car is moving, and ends the instant any road speed appears.
+            On exit the gear is re-identified from the live ratio before any further shift is allowed.
+        </div>
+
+        <div class="tuner-controls" style="align-items:center;">
+            <button id="bench-toggle" class="primary" onclick="toggleBench()">Enable test mode</button>
+            <span id="bench-state" style="font-family:monospace; font-size:0.75rem; color:var(--slate-500);">OFF</span>
+        </div>
+
+        <fieldset id="bench-controls" disabled style="border:none; padding:0; opacity:0.4; transition:opacity 0.2s;">
+            <div style="margin-top:0.6rem;">
+                <span class="label">Selector (virtual)</span>
+                <div id="bench-prnd" style="display:flex; gap:0.4rem; flex-wrap:wrap; margin-top:0.35rem;"></div>
+            </div>
+
+            <div style="margin-top:1.2rem;">
+                <span class="label">Paddles (virtual)</span>
+                <div style="display:flex; gap:0.6rem; margin-top:0.35rem;">
+                    <button onclick="benchPaddle(1)" style="font-size:1rem; padding:0.6rem 1.6rem;">▲ Upshift</button>
+                    <button onclick="benchPaddle(-1)" style="font-size:1rem; padding:0.6rem 1.6rem;">▼ Downshift</button>
+                </div>
+            </div>
+
+            <div style="margin-top:1.2rem; display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:0.6rem;">
+                <div class="status-box"><span class="label" style="color:var(--slate-500);">Gear</span>
+                    <span id="bench-gear" class="data-font" style="font-size:1.6rem; font-weight:900; color:var(--cyan);">–</span></div>
+                <div class="status-box"><span class="label" style="color:var(--slate-500);">Phase</span>
+                    <span id="bench-phase" class="data-font">–</span></div>
+                <div class="status-box"><span class="label" style="color:var(--slate-500);">Line %</span>
+                    <span id="bench-mpc" class="data-font">–</span></div>
+                <div class="status-box"><span class="label" style="color:var(--slate-500);">Shift %</span>
+                    <span id="bench-spc" class="data-font">–</span></div>
+            </div>
+        </fieldset>
+    </main>
     <main id="tab-params" class="tab-content glass-panel" style="flex-grow:1;">
         <div class="tuner-controls">
             <span style="font-size:0.8rem; color:var(--slate-300); font-weight:700;">Shift Feel — live calibration</span>
@@ -427,6 +479,63 @@
             colorCell(inp);
         }
 
+
+        // ----------------------------------------------------
+        // BENCH TEST MODE
+        // The toggle is a REQUEST — the TCU owns the decision (it refuses while the
+        // vehicle is moving) and reports the real state back in telemetry, so the UI
+        // never assumes it succeeded.
+        // ----------------------------------------------------
+        let benchOn = false;
+        const BENCH_RANGES = ['P','R','N','D','4','3','2','1'];
+
+        (function buildBenchPrnd(){
+            const host = document.getElementById('bench-prnd');
+            if (!host) return;
+            BENCH_RANGES.forEach(r => {
+                const b = document.createElement('button');
+                b.textContent = r;
+                b.id = 'bench-prnd-' + r;
+                b.style.cssText = 'min-width:44px; font-size:1rem; font-weight:800;';
+                b.onclick = () => ws.send(JSON.stringify({ cmd:'test_prnd', v:r }));
+                host.appendChild(b);
+            });
+        })();
+
+        function toggleBench(){
+            ws.send(JSON.stringify({ cmd:'test_mode', on: !benchOn }));
+        }
+        function benchPaddle(dir){
+            ws.send(JSON.stringify({ cmd:'test_paddle', dir: dir }));
+        }
+
+        function renderBench(d){
+            const on = !!d.testMode;
+            if (on !== benchOn) {
+                benchOn = on;
+                const btn = document.getElementById('bench-toggle');
+                btn.innerText = on ? 'Disable test mode' : 'Enable test mode';
+                btn.style.background = on ? 'var(--orange)' : 'var(--cyan)';
+                document.getElementById('bench-state').innerText = on ? 'ON — BENCH ONLY' : 'OFF';
+                document.getElementById('bench-state').style.color = on ? 'var(--orange)' : 'var(--slate-500)';
+                document.getElementById('bench-banner').style.display = on ? 'block' : 'none';
+                const fs = document.getElementById('bench-controls');
+                fs.disabled = !on;
+                fs.style.opacity = on ? '1' : '0.4';
+            }
+            if (!on) return;
+            document.getElementById('bench-gear').innerText  = d.gear;
+            document.getElementById('bench-phase').innerText = PHASE_NAMES[d.phase] || d.phase;
+            document.getElementById('bench-mpc').innerText   = d.mpc + '%';
+            document.getElementById('bench-spc').innerText   = d.spc + '%';
+            BENCH_RANGES.forEach(r => {
+                const b = document.getElementById('bench-prnd-' + r);
+                const sel = (d.prnd === r);
+                b.style.background = sel ? 'var(--cyan)' : 'var(--slate-800)';
+                b.style.color      = sel ? 'var(--bg)'   : 'var(--white)';
+            });
+        }
+        const PHASE_NAMES = ['CRUISE','PREP','FILL','TORQUE','INERTIA','RELEASE','CATCH','LOCK','END'];
         function requestCells(){ ws.send(JSON.stringify({ cmd: "get_cells" })); }
         function flashCells(){
             ws.send(JSON.stringify({ cmd: "set_cells", data: cellData }));
@@ -893,6 +1002,7 @@
                 if(data.htMode) { hb.style.background = 'rgba(251, 146, 60, 0.2)'; hb.style.borderColor = 'var(--orange)'; hv.style.color = 'var(--orange)'; hv.innerText = 'ACTIVE'; }
                 else { hb.style.background = 'rgba(30, 41, 59, 0.4)'; hb.style.borderColor = 'transparent'; hv.style.color = 'var(--slate-400)'; hv.innerText = 'NORMAL'; }
 
+                renderBench(data);
                 ShiftChart.push(data);
                 ThreeView.update(data);
                 GearboxView.update(data);

@@ -17,6 +17,7 @@ static const char* DTC_NAMES[DTC_COUNT] = {
     "OVERREV UPSHIFT",
     "LOOP OVERRUN",
     "SHIFT UNVERIFIED",
+    "TEST MODE USED",
 };
 const char* dtcName(uint8_t code) { return (code < DTC_COUNT) ? DTC_NAMES[code] : "?"; }
 
@@ -50,10 +51,14 @@ void DtcManager::trip(DtcCode c) {
 }
 
 void DtcManager::poll() {
-    setActive(DTC_SPEED_N2N3_MISMATCH, !telemetry.input_speed_trusted);
-    setActive(DTC_SPEED_HW_FAIL,       !telemetry.speed_hw_ok);
-    setActive(DTC_TPS_RAIL,            !telemetry.tps_valid);
-    setActive(DTC_MAP_RAIL,            !telemetry.map_valid);
+    // On a bench the sensor lines are open by definition. Logging those four every
+    // session would bury the real faults, so suppress them while test mode is on
+    // (DTC_TEST_MODE already records that the unit was bench-driven).
+    bool sensors = !telemetry.test_mode;
+    setActive(DTC_SPEED_N2N3_MISMATCH, sensors && !telemetry.input_speed_trusted);
+    setActive(DTC_SPEED_HW_FAIL,       sensors && !telemetry.speed_hw_ok);
+    setActive(DTC_TPS_RAIL,            sensors && !telemetry.tps_valid);
+    setActive(DTC_MAP_RAIL,            sensors && !telemetry.map_valid);
     setActive(DTC_LIMP_SLIP,            telemetry.is_limp_mode);
     setActive(DTC_REVERSE_AT_SPEED,     telemetry.reverse_abuse_active);
     telemetry.dtc_active_count = activeCount();

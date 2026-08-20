@@ -360,6 +360,82 @@ void test_moneyshift_guard_survives_dead_output_sensor(void) {
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// BENCH TEST MODE. The scenario is a TCU on a table wired to nothing but a valve
+// body: no speed sensors, no engine, no throttle, no shifter plate.
+// ---------------------------------------------------------------------------
+static void setupBench() {
+    bootStack();
+    telemetry.prnd_state    = 'P';   // no plate attached: the decoder holds its boot value
+    telemetry.drive_engaged = false;
+    telemetry.output_rpm = 0.0f; telemetry.turbine_rpm = 0.0f;
+    telemetry.n2_rpm = 0.0f;     telemetry.n3_rpm = 0.0f;
+    telemetry.engine_rpm = 0.0f; telemetry.tps_pct = 0.0f;
+    telemetry.map_kpa = 100.0f;  telemetry.atf_temp_c = 40.0f;
+    telemetry.test_mode = false; telemetry.test_mode_cmd = 0;
+    telemetry.paddle_up_request = false; telemetry.paddle_down_request = false;
+    telemetry.is_limp_mode = false; telemetry.is_slipping = false;
+    telemetry.last_auto_shift_ms = 0;
+    sched._prev_pn_raw = false;
+    hwResetPins();
+}
+
+// The feature itself: a commanded shift must reach the hydraulics with every sensor
+// dead. Nothing can ever confirm the ratio here, so this also depends on the F12a
+// observability rule — verification applies only where the ratio is real.
+void test_bench_mode_shifts_with_every_sensor_dead(void) {
+    setupBench();
+    telemetry.test_mode_cmd = 1;                  // dashboard toggle: enter
+    tick(2);
+    TEST_ASSERT_TRUE_MESSAGE(telemetry.test_mode, "must enter bench mode while stopped");
+
+    telemetry.prnd_state = 'D';                   // dashboard virtual selector
+    tick(2);
+    TEST_ASSERT_TRUE_MESSAGE(telemetry.drive_engaged, "a forced range must latch drive");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, telemetry.current_gear, "engages at hydraulic default 2nd");
+
+    hwResetPins();
+    telemetry.paddle_up_request = true;           // dashboard virtual paddle
+    tick(2);
+    // Assert the kick WHILE it is live: g_pwm holds the last value written, and the
+    // driver drops the coil to its hold duty at 60 ms and to 0 when the shift ends.
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(KICK_DUTY, g_pwm[PIN_Y5],
+        "a 2-3 on a dead bench must still kick Y5 - the hydraulics are the point");
+    tickUntilShiftEnds(4000);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, telemetry.current_gear,
+        "the shift must latch even though no ratio could ever confirm it");
+}
+
+// Entry is refused in a moving car: bench mode suspends slip-limp and the automatic
+// layers, none of which is safe to switch off at road speed.
+void test_bench_mode_refuses_to_start_while_moving(void) {
+    setupBench();
+    telemetry.output_rpm = 800.0f;
+    telemetry.test_mode_cmd = 1;
+    tick(2);
+    TEST_ASSERT_FALSE_MESSAGE(telemetry.test_mode, "must refuse to arm while moving");
+}
+
+// The guard that matters if the toggle is left on: real road speed ends bench mode,
+// and the bench-era gear label is not trusted for the next shift.
+void test_bench_mode_ends_the_moment_the_car_moves(void) {
+    setupBench();
+    telemetry.test_mode_cmd = 1; tick(2);
+    telemetry.prnd_state = 'D';  tick(2);         // latch drive while still stopped
+    TEST_ASSERT_TRUE(telemetry.drive_engaged);
+    TEST_ASSERT_TRUE(telemetry.test_mode);
+
+    telemetry.output_rpm = 800.0f;                // driven away with the toggle still on
+    tick(2);
+    TEST_ASSERT_FALSE_MESSAGE(telemetry.test_mode, "real road speed must end bench mode");
+
+    hwResetPins();
+    telemetry.paddle_up_request = true;
+    tick(5);
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, g_pwm[PIN_Y5],
+        "no shift may dispatch on a bench-era gear label — it must ratio-resync first");
+}
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_routing_table_matches_722_6_hydraulics);
@@ -375,5 +451,8 @@ int main(int, char**) {
     RUN_TEST(test_shift_during_crank_pulse_is_not_swallowed);
     RUN_TEST(test_shift_takes_y4_over_from_the_garage_pulse);
     RUN_TEST(test_moneyshift_guard_survives_dead_output_sensor);
+    RUN_TEST(test_bench_mode_shifts_with_every_sensor_dead);
+    RUN_TEST(test_bench_mode_refuses_to_start_while_moving);
+    RUN_TEST(test_bench_mode_ends_the_moment_the_car_moves);
     return UNITY_END();
 }

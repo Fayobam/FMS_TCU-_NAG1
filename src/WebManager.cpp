@@ -62,6 +62,32 @@ void WebManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     String cmd = doc["cmd"];
 
     // --- Safety: allow the dashboard to request a limp-mode reset ---
+
+    // --- Bench test mode -------------------------------------------------------
+    // The toggle is a REQUEST: Core 1 owns the decision (it can refuse while moving)
+    // and the state, so Core 0 never writes telemetry.test_mode directly.
+    if (cmd == "test_mode") {
+        telemetry.test_mode_cmd = doc["on"].as<bool>() ? 1 : -1;
+        return;
+    }
+    // Virtual selector and paddles. Honoured ONLY while test mode is active: these are
+    // remote controls over an open WiFi AP, and shifting a moving car from a phone is
+    // not a feature. The scheduler applies its normal guards to whatever they request.
+    if (cmd == "test_prnd") {
+        if (!telemetry.test_mode) return;
+        const char* s = doc["v"] | "";
+        char c = s[0];
+        if (c=='P'||c=='R'||c=='N'||c=='D'||c=='4'||c=='3'||c=='2'||c=='1')
+            telemetry.prnd_state = c;
+        return;
+    }
+    if (cmd == "test_paddle") {
+        if (!telemetry.test_mode) return;
+        int dir = doc["dir"] | 0;
+        if (dir > 0)      telemetry.paddle_up_request = true;
+        else if (dir < 0) telemetry.paddle_down_request = true;
+        return;
+    }
     if (cmd == "limp_reset") {
         telemetry.limp_reset_request = true;   // honoured only when stopped & in P/N
         Serial.println("Limp reset requested via web.");
@@ -380,6 +406,7 @@ void WebManager::buildAndSendTelemetryJSON() {
     doc["htMode"]    = telemetry.high_torque_mode;
     doc["phase"]     = telemetry.shift_phase;
     doc["revAbuse"]  = telemetry.reverse_abuse_active;
+    doc["testMode"]  = telemetry.test_mode;
 
     // Class engine readouts (the validation plan logs these per shift).
     doc["tEstNm"]    = telemetry.t_est_nm;
