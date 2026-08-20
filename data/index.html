@@ -535,7 +535,6 @@
                 b.style.color      = sel ? 'var(--bg)'   : 'var(--white)';
             });
         }
-        const PHASE_NAMES = ['CRUISE','PREP','FILL','TORQUE','INERTIA','RELEASE','CATCH','LOCK','END'];
         function requestCells(){ ws.send(JSON.stringify({ cmd: "get_cells" })); }
         function flashCells(){
             ws.send(JSON.stringify({ cmd: "set_cells", data: cellData }));
@@ -707,6 +706,9 @@
         // HIGH-RATE SHIFT DATALOG (received once per shift)
         // ----------------------------------------------------
         let lastTrace = null;
+        // Single top-level declaration — the Bench Test tab and the gearbox view both
+        // reuse this. A second `const PHASE_NAMES` anywhere at this scope is a parse-time
+        // SyntaxError that silently kills the whole dashboard script.
         const PHASE_NAMES = ['CRUISE','PREP','FILL','TORQUE','INERTIA','RELEASE','CATCH','LOCK','END'];
         const TRACE_CLASS = ['POWER_UP','COAST_UP','POWER_DOWN','COAST_DOWN'];
         const TRACE_PD = ['','SPRAG','TIMED'];
