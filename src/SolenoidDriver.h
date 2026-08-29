@@ -35,8 +35,6 @@ class SolenoidDriver {
     RoutingSolenoid _y5; // 2-3 Shift Valve
 
     bool _y4_garage_owned = false;       // Y4 currently held by the garage pulse (not a 3-4 shift)
-    bool _crank_active = false;          // Y3 boot/crank conditioning pulse in progress
-    TickType_t _crank_start_tick = 0;
 
     void processRoutingSolenoid(RoutingSolenoid &sol);
 
@@ -58,6 +56,5 @@ class SolenoidDriver {
 
     void setStandbyProfile(StandbyProfile p);  // SPC/MPC resting duties when not shifting
     void setGarageY4(bool pulsing);            // B2 counter-pressure pulse in Park / lever window
-    void crankPulseY3();                       // ~400ms valve-body conditioning pulse at boot
     void setTorqueCut(bool on);                // rusEFI shift-retard request (power-up inertia)
 };

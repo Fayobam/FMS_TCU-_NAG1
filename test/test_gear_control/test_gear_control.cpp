@@ -37,10 +37,8 @@ static const uint16_t KICK_DUTY = 204;   // ~80% snap-open kick (SolenoidDriver)
 // ---------------------------------------------------------------------------
 static float ratioOf(uint8_t gear) { return g_trans.ratio[gear - 1]; }
 
-// Boot the stack the way main.cpp does, then run the solenoid driver (only) long
-// enough for the 400 ms Y3 crank-conditioning pulse to expire — so tests that are
-// not ABOUT the crank window start from a quiet valve body.
-static void bootStack(bool clearCrankPulse = true) {
+// Boot the stack the way main.cpp does.
+static void bootStack() {
     g_now_ms = 1000;
     hwResetPins();
     engineProfile.begin();
@@ -48,9 +46,6 @@ static void bootStack(bool clearCrankPulse = true) {
     dtcManager.begin();
     sol.begin();
     sched.begin();
-    if (clearCrankPulse) {
-        for (int i = 0; i < 450; i++) { g_now_ms++; sol.update(); }
-    }
 }
 
 // Steady state: engaged, in `gear`, rolling at `out_rpm`, part throttle, warm.
@@ -314,20 +309,16 @@ void test_next_shift_routes_from_the_corrected_gear(void) {
 }
 
 // ===========================================================================
-// 3. SOLENOID OWNERSHIP — the boot Y3 crank pulse must not swallow a real shift
+// 3. SOLENOID OWNERSHIP — boot must not stroke the 1-2 valve; garage Y4
+//    must still yield to a real 3-4
 // ===========================================================================
-// FINDING 3: during the 400 ms conditioning pulse Y3 sits in STATE_HOLDING, and
-// fireShiftSolenoid() only acts on STATE_OFF — so a 1-2 / 4-5 / 2-1 / 5-4 shift
-// in that window is silently dropped (and update() then forces Y3 off anyway).
-// Same class as the Y4 garage-pulse bug that was already fixed.
-void test_shift_during_crank_pulse_is_not_swallowed(void) {
-    bootStack(/*clearCrankPulse=*/false);       // Y3 is mid conditioning pulse
-    hwResetPins();
-    sol.fireShiftSolenoid(PIN_Y3);
-    sol.update();
-    TEST_ASSERT_EQUAL_UINT16_MESSAGE(KICK_DUTY, g_pwm[PIN_Y3],
-        "FINDING 3: a real shift must take Y3 over from the boot crank pulse, "
-        "not be silently dropped");
+// OEM pulses Y3 at crank, which can pre-position the 1-2 command valve into
+// 1st/R1 before the lever moves. We do not: 1st comes only from the launch
+// 2->1 after D is latched.
+void test_boot_leaves_y3_off(void) {
+    bootStack();
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, g_pwm[PIN_Y3],
+        "boot must not pulse Y3 — that can latch 1st/R1 before the lever moves");
 }
 
 // The already-fixed Y4 case — locked in so it cannot regress.
@@ -448,7 +439,7 @@ int main(int, char**) {
     RUN_TEST(test_shift_backstop_stretches_when_cold);
     RUN_TEST(test_registry_edit_changes_live_behaviour);
     RUN_TEST(test_next_shift_routes_from_the_corrected_gear);
-    RUN_TEST(test_shift_during_crank_pulse_is_not_swallowed);
+    RUN_TEST(test_boot_leaves_y3_off);
     RUN_TEST(test_shift_takes_y4_over_from_the_garage_pulse);
     RUN_TEST(test_moneyshift_guard_survives_dead_output_sensor);
     RUN_TEST(test_bench_mode_shifts_with_every_sensor_dead);
