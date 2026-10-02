@@ -647,7 +647,10 @@ void test_atf_signal_loss_aborts_shift_and_requires_new_dwell() {
     atfTick(30); TEST_ASSERT_TRUE(telemetry.atf_forward_confirmed);
 }
 void test_atf_stale_speed_and_stop_revoke_authority() {
-    atfDriving(); atfTick(320); atfTick(30,false);
+    // The speed-sample gap must EXCEED the freshness window to revoke. Written in
+    // terms of the constant so widening it again cannot leave this test passing for
+    // the wrong reason.
+    atfDriving(); atfTick(320); atfTick(ATF_EVIDENCE_FRESH_MS+20,false);
     TEST_ASSERT_FALSE(telemetry.atf_forward_confirmed);
     atfTick(320); TEST_ASSERT_TRUE(telemetry.atf_forward_confirmed);
     telemetry.output_rpm=0; atfTick(1);

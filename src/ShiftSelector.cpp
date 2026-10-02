@@ -1,6 +1,7 @@
 // Optional ATF-only range adapter. Runs exclusively on the physics task.
 // It never asserts Reverse or P/N. Open contact and open wire are indistinguishable.
 #include "ShiftScheduler.h"
+#include "AtfRangeObserver.h"   // ATF_EVIDENCE_FRESH_MS: one window, one meaning
 #include <cmath>
 #include "EngineProfile.h"
 
@@ -47,7 +48,7 @@ bool ShiftScheduler::updateAtfSelector() {
     }
     const bool newSample = _atfSpeedSeq != telemetry.speed_sample_seq;
     if (newSample) {
-        if (now-_atfSpeedAt > 20) {
+        if (now-_atfSpeedAt > ATF_EVIDENCE_FRESH_MS) {
             _atfCandidate = 0;
             telemetry.atf_forward_confirmed = false;
         }
@@ -57,14 +58,14 @@ bool ShiftScheduler::updateAtfSelector() {
     if (telemetry.is_limp_mode && telemetry.limp_reset_request
         && telemetry.engine_rpm < 100 && telemetry.output_rpm < 50
         && telemetry.turbine_rpm < 50 && telemetry.atf_range_evidence == 1
-        && now-telemetry.atf_sample_ms <= 20) {
+        && now-telemetry.atf_sample_ms <= ATF_EVIDENCE_FRESH_MS) {
         telemetry.is_limp_mode = false;
         telemetry.limp_reset_request = false;
         telemetry.is_slipping = false;
         setLimpReason("");
     }
     const bool live = telemetry.atf_range_evidence == 2 && telemetry.atf_sampled
-        && now-telemetry.atf_sample_ms <= 20 && now-_atfSpeedAt <= 20
+        && now-telemetry.atf_sample_ms <= ATF_EVIDENCE_FRESH_MS && now-_atfSpeedAt <= ATF_EVIDENCE_FRESH_MS
         && telemetry.speed_hw_ok && telemetry.n2_signal_recent
         && telemetry.output_signal_recent && telemetry.output_rpm >= 200
         && telemetry.n2_rpm >= 100 && std::isfinite(telemetry.turbine_rpm)

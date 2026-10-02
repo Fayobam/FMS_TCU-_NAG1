@@ -1,6 +1,7 @@
 #include "ControlBridge.h"
 #include "DtcManager.h"
 #include "TelemetryConfig.h"
+#include "AtfRangeObserver.h"   // ATF_EVIDENCE_FRESH_MS
 
 ControlBridge controlBridge;
 
@@ -23,7 +24,7 @@ void ControlBridge::consume(AdaptiveMemory& adaptives) {
     const bool stopped = telemetry.output_rpm < 50 && telemetry.engine_rpm < 100
         && telemetry.turbine_rpm < 50;
     const bool atfOpen = telemetry.atf_only_selector && telemetry.atf_sampled
-        && telemetry.atf_range_evidence == 1 && millis()-telemetry.atf_sample_ms <= 20;
+        && telemetry.atf_range_evidence == 1 && millis()-telemetry.atf_sample_ms <= ATF_EVIDENCE_FRESH_MS;
     const bool parked = stopped && (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N' || atfOpen)
         && telemetry.shift_phase == 0 && !telemetry.test_mode;
     accepted = true;
@@ -40,7 +41,7 @@ void ControlBridge::consume(AdaptiveMemory& adaptives) {
         // failed reading "engaged" would latch the experimental mode on, and it is
         // persisted to NVS, so a reboot would not clear it either.
         if (!stopped || telemetry.shift_phase != 0 || telemetry.test_mode) { accepted = false; break; }
-        if (c.value && (!telemetry.atf_sampled || millis() - telemetry.atf_sample_ms > 20
+        if (c.value && (!telemetry.atf_sampled || millis() - telemetry.atf_sample_ms > ATF_EVIDENCE_FRESH_MS
             || telemetry.atf_range_evidence != 1)) { accepted = false; break; }
         telemetry.atf_only_selector = c.value != 0;
         telemetry.atf_forward_confirmed = false;

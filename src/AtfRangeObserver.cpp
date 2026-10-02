@@ -2,8 +2,8 @@
 #include <cmath>
 
 AtfRangeEvidence AtfRangeObserver::update(float volts, bool sampled, uint32_t now) {
-    // ATF normally samples every 3 ms. A gap cannot establish continuous dwell.
-    if (!hasSample || now - lastSampleAt > 20) {
+    // A gap cannot establish continuous dwell. ATF normally samples every 3 ms.
+    if (!hasSample || now - lastSampleAt > ATF_EVIDENCE_FRESH_MS) {
         candidate = stable = AtfRangeEvidence::Unknown;
         candidateSince = now;
     }
@@ -25,6 +25,6 @@ AtfRangeEvidence AtfRangeObserver::update(float volts, bool sampled, uint32_t no
         candidateSince = now;
         stable = AtfRangeEvidence::Unknown;
     }
-    if (now - candidateSince >= 100) stable = candidate;
+    if (now - candidateSince >= ATF_QUALIFY_MS) stable = candidate;
     return stable;
 }

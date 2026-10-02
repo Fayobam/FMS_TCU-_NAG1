@@ -29,7 +29,13 @@ int main() {
     assert(o.update(1.2f,true,1000)==E::Unknown); // missing samples cannot qualify
     for (uint32_t t=1010; t<1100; t+=10) assert(o.update(1.2f,true,t)==E::Unknown);
     assert(o.update(1.2f,true,1100)==E::EngagedCircuit);
-    assert(o.update(1.2f,true,1121)==E::Unknown); // gap revokes established evidence
-    assert(o.update(1.2f,false,1122)==E::Unknown);
+    // A gap inside the freshness window must NOT revoke: a flash-cache stall is not
+    // evidence that the lever moved. Only a gap beyond it does.
+    assert(o.update(1.2f,true,1121)==E::EngagedCircuit);   // 21 ms gap: still current
+    assert(o.update(1.2f,true,1122+ATF_EVIDENCE_FRESH_MS)==E::Unknown); // beyond it: revoked
+    uint32_t base=1300;
+    for (uint32_t t=base; t<=base+ATF_QUALIFY_MS; t+=10) o.update(1.2f,true,t);
+    assert(o.update(1.2f,true,base+ATF_QUALIFY_MS+10)==E::EngagedCircuit);
+    assert(o.update(1.2f,false,base+ATF_QUALIFY_MS+20)==E::Unknown); // an invalid sample revokes
     std::cout << "ATF range evidence: PASS (no actuation authority)\n";
 }
