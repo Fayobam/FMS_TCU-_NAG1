@@ -141,6 +141,13 @@
     if (!vals.length) {
       ctx.fillStyle = '#7e8b90';
       ctx.fillText('Waiting for available samples', left + 15, top + ph / 2);
+    } else if (source === 'live' && count < capacity) {
+      // The rolling window starts empty, so early on the trace hugs the right edge
+      // and reads as a fault. Expressed as a fraction of the window rather than in
+      // seconds, so it stays correct if the telemetry rate ever changes.
+      ctx.fillStyle = '#7e8b90';
+      ctx.fillText('collecting · ' + Math.round(100 * count / capacity) + '% of window',
+        left + 15, top + 14);
     }
   }
 

@@ -457,14 +457,22 @@ main {
 }
 
 .rpm-primary {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
   align-items: baseline;
   margin-top: 23px
 }
 
-.rpm-primary>span {
-  font: 48px var(--mono);
+.rpm-primary>div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0
+}
+
+.rpm-primary span {
+  font: clamp(26px, 3.2vw, 48px) var(--mono);
   letter-spacing: -2px
 }
 
@@ -476,7 +484,7 @@ main {
 .rpm-rail {
   height: 4px;
   background: #353c3f;
-  margin: 16px 0 30px
+  margin: 10px 0 0
 }
 
 .rpm-rail i {
@@ -1051,8 +1059,11 @@ td {
 }
 
 #toast {
+  /* Bottom-LEFT: the right column carries live values, and a 6.5 s overlay sat on
+     top of them. Bottom-left is static chrome in both the wide and collapsed
+     layouts, so an error can be read without hiding the data it refers to. */
   position: fixed;
-  right: 28px;
+  left: 28px;
   bottom: 24px;
   max-width: min(460px, 90vw);
   border: 1px solid #64725e;
@@ -1196,6 +1207,13 @@ body.stale .meter-track {
 }
 
 @media(max-width:760px) {
+
+  /* Two large numerals do not fit a half-width panel on a phone. */
+  .rpm-primary {
+    grid-template-columns: 1fr;
+    gap: 14px
+  }
+
   .sidebar {
     position: sticky;
     top: 0;
@@ -1328,8 +1346,10 @@ body.stale .meter-track {
     font-size: 32px
   }
 
+  /* Was hidden when ENGINE was the only large number and the panel title made it
+     obvious. With ENGINE and TURBINE stacked, an unlabelled pair is ambiguous. */
   .rpm-primary small {
-    display: none
+    display: block
   }
 
   .rpm-rail {

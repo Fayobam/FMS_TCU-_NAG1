@@ -86,17 +86,19 @@
               <span class="eyebrow">RPM</span>
             </div>
             <div class="rpm-primary">
-              <span data-field="engRpm">—</span>
-              <small>ENGINE</small>
-            </div>
-            <div class="rpm-rail">
-              <i id="rpm-bar"></i>
+              <div>
+                <span data-field="engRpm">—</span>
+                <small>ENGINE</small>
+                <div class="rpm-rail">
+                  <i id="rpm-bar"></i>
+                </div>
+              </div>
+              <div>
+                <span data-field="turbRpm">—</span>
+                <small>TURBINE</small>
+              </div>
             </div>
             <div class="metrics three">
-              <div>
-                <label>Turbine</label>
-                <b data-field="turbRpm">—</b>
-              </div>
               <div>
                 <label>Output</label>
                 <b data-field="outRpm">—</b>
@@ -104,6 +106,10 @@
               <div>
                 <label>Road speed <small>km/h</small></label>
                 <b data-field="kmh" data-digits="1">—</b>
+              </div>
+              <div>
+                <label>Live ratio</label>
+                <b data-field="ratio" data-digits="3">—</b>
               </div>
             </div>
           </article>
