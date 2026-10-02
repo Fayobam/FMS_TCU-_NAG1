@@ -179,22 +179,29 @@ map<130 gates — they're deliberate (boost launches slip the converter).
 TCC-locked 5th cruise instead of persisting forever.
 
 ### F9 — Comms hygiene batch  [R10 + honorable mentions]
-**Status:** PARTIALLY DONE — remaining items listed below.
-- DONE (`ae98f5c`): `SPIFFS.begin(false)` — never format assets as a boot side
-  effect. Bounded 3072-byte telemetry buffer with oversize packets counted, not
-  truncated (`TelemetryConfig.h`); the trace serialize checks its allocation and
-  skips the send on failure.
-- DONE (`def1ee4`): the "DOWNSHIFT BLOCKED" spam. Root cause was NOT just the log
-  volume — `checkKickdown()` re-issued the refused request every tick because only
-  a successful shift arms `last_auto_shift_ms`, and its throttle/rpm gate does not
-  coincide with the guard's predicted-turbine test. Fixed by pre-screening with the
-  shared `predictedDownshiftRpm()`, plus a 1/s limit on the log itself. Arming the
-  cooldown on refusal was rejected: it also gates OVERREV.
-- TODO: soft-overrun counter (1001-1500 us ticks into a separate telemetry counter
-  alongside the existing 1500 us DTC trip in `main.cpp`).
-- TODO: wrap `DtcManager::clearAll()` / `processFlush()` in a portMUX.
-- TODO: delete dead `checkCoastDownSchedule()` (confirm with user first).
-- TODO: fix the `computeLoad()` comment (`TCU_Data.h`).
+**Status:** DONE (2026-10-02, commits `ae98f5c`, `def1ee4`, `f3762d1`).
+- `SPIFFS.begin(false)` — never format assets as a boot side effect. Bounded
+  3072-byte telemetry buffer, oversize packets counted not truncated; the trace
+  serialize checks its allocation and skips the send on failure. (`ae98f5c`)
+- The "DOWNSHIFT BLOCKED" spam. Root cause was NOT log volume: `checkKickdown()`
+  re-issued the refused request every tick, because only a successful shift arms
+  `last_auto_shift_ms` and its throttle/rpm gate does not coincide with the
+  guard's predicted-turbine test. Pre-screened with the shared
+  `predictedDownshiftRpm()`, plus a 1/s limit on the log. Arming the cooldown on
+  refusal was rejected — it also gates OVERREV. (`def1ee4`)
+- Soft-overrun counter, now a triple: `loop_overrun_soft` (1000-1500 us),
+  `loop_overrun_hard` (>1500 us) and `loop_max_us`. Unthrottled, so a rare stall
+  is still visible after the fact; the DTC keeps its 1/s limit. (`f3762d1`)
+- `DtcManager` arrays behind a portMUX, locking at the leaves (the ESP32 spinlock
+  is not recursive and `poll()` calls `setActive()` in a loop). `processFlush()`
+  copies under the lock and writes NVS outside it. The three per-index accessors
+  are replaced by one `snapshot()`, because `sendDtcs()` could otherwise mix pre-
+  and post-`clearAll()` state inside a single reply. (`f3762d1`)
+- `computeLoad()` comment corrected: `loadToBin` clamps the BIN INDEX, not the
+  load, so load 187.5+ all shares bin 15 and boosted WOT does saturate one cell.
+  Comment only — widening bins would re-map every learned cell. (`f3762d1`)
+- Dead `checkCoastDownSchedule()`: **moot**, the September refactor already
+  removed it. No sign-off needed.
 **Design (batch of small independent edits, one commit):**
 - `SPIFFS.begin(false)` + on failure retry once, then serve the stub and set a
   telemetry flag — never auto-format the dashboard assets.
@@ -351,9 +358,52 @@ not redo it:
 AsyncTCP watchdog fix and the F4 bench stall test are all still unconfirmed on
 device. Host and target-build checks only.
 
+---
+
+## ATF-only selector review  [2026-10-02, commit `16289a4`]
+
+Reviewed on request. The mode is carefully built and its own doc is honest about
+what it cannot know. Two issues fixed, two deliberately left alone.
+
+**Fixed:**
+- The enable/disable interlock was symmetric, but the risk is not. An ATF sensor
+  failing "engaged" could not satisfy `evidence == 1`, so the mode could not be
+  turned OFF — and it is persisted to NVS, so a reboot would not clear it either.
+  Fresh open-circuit evidence is now required only to ENABLE. Disabling hands
+  authority back to the TRRS and the normal resync path, which is the
+  better-verified path; gating that on sensor health was backwards.
+- Derived telemetry (`t_est_nm`, `load_pct`, `t_input_nm`) froze while authority
+  was withheld, because `update()` returns early. The de-energized state is
+  exactly when someone is reading the dashboard to find out why.
+
+**Verified sound (no change needed):** reverse cannot be read as a forward gear
+(reverse 3.100 is 0.69 clear of the nearest forward ratio against a 0.05 window,
+and N2 reads 0 in reverse against a 100 rpm floor); no two forward ratios sit
+within 0.10 so the window cannot match two gears; `turbine/output` is measured
+after the converter so converter slip does not perturb it; `updateAtfSelector()`
+runs first in `update()` and returns early, so the mid-shift abort's
+`current_gear = 2` placeholder cannot fire here.
+
+**TODO — needs bench traces before touching, do not "fix" from reasoning:**
+- **Asymmetric authority hysteresis.** 300 ms of consistent evidence to acquire,
+  zero to lose. Loss de-energizes routing, MPC/SPC and TCC, so the valve body
+  falls to its hydraulic default; at road speed in 5th that is an uncommanded
+  engagement, and nothing bounds it by speed. A short loss-dwell holding the last
+  authorized gear while evidence is briefly missing would cut the exposure
+  without weakening acquisition. Needs traces of how often evidence actually
+  drops out on a real car first.
+- **Loop timing became safety-critical.** Every authority gate is a 20 ms
+  freshness window (ATF sample, speed sample, `AtfRangeObserver`'s gap reset),
+  while worst-case loop timing is explicitly unmeasured (`CONTROL_REVIEW.md`:
+  NVS writes, flash/cache stalls, UART). With a wired selector such a stall is
+  harmless; here it de-energizes the gearbox at speed. The `loop_max_us` counter
+  from `f3762d1` is the measurement — read it after a drive before deciding
+  whether the windows need widening.
+
 ## Done
 
 - F1, F2, F3, F4 (2026-07-01) — see entries above.
+- F9 complete; ATF-only mode reviewed (2026-10-02).
 - September review: control/web/asset split, ATF-only selector (2026-09-14).
 - F7 (as ControlBridge), F9 blocked-downshift item (2026-10-02).
 - F12, F13, F14 + native test harness (2026-08-11).

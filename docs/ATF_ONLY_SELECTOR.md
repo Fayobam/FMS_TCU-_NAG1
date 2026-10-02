@@ -31,6 +31,21 @@ reverse input is used while enabled. Physical paddles remain the shift requests.
 - Limp remains latched. An explicit reset still requires stopped shafts and engine
   off; in this mode a fresh open ATF indication replaces the unavailable P/N input.
 
+Two hazards are known and NOT yet addressed, pending bench traces:
+
+- **Authority is asymmetric in time.** Acquiring it needs 300 ms of consistent
+  evidence; losing it takes effect on the tick. Loss de-energizes routing, MPC/SPC
+  and TCC, so the valve body falls to its hydraulic default — at road speed in 5th
+  that is an uncommanded engagement, and nothing scales the response by speed. The
+  bench item "engagement harshness with de-energized outputs" below is this.
+- **Control-loop timing is safety-critical here.** Every gate above is a 20 ms
+  freshness window, and worst-case loop timing is unmeasured (see
+  [control review](CONTROL_REVIEW.md): NVS writes, flash/cache stalls, UART in the
+  control task). With a wired selector such a stall is harmless; in this mode it
+  revokes authority. Telemetry now reports `loopMaxUs`, `loopOverrunSoft` and
+  `loopOverrunHard` — read `loopMaxUs` after a drive and compare it against the
+  20 ms windows before trusting this mode on the road.
+
 **This mode cannot command a standstill downshift or guarantee second gear after
 stopping.** A retained higher gear is possible. Do not assume a P/N excursion resets
 it. The mode also cannot prevent a mechanically selected reverse engagement while
@@ -40,7 +55,12 @@ moving. It never identifies or commands a reverse gear.
 
 WebSocket command: `{"cmd":"selector.atf","on":true}` (or `false`). A real JSON
 boolean is required. Both transitions require engine below 100 RPM, turbine/output
-below 50 RPM, cruise phase, bench mode off and a fresh, debounced open ATF circuit.
+below 50 RPM, cruise phase and bench mode off. **Enabling additionally requires a
+fresh, debounced open ATF circuit; disabling does not.** That asymmetry is
+deliberate: enabling hands gear authority to inferred evidence, while disabling
+hands it back to the TRRS and the normal resync path. Requiring a healthy ATF
+reading to leave the mode would let a sensor stuck reading "engaged" latch it on,
+and the setting is persisted, so a reboot would not clear it.
 The operator must secure the vehicle: silence from failed speed sensors is not
 independent proof of rest, and an open wire can resemble P/N.
 
