@@ -1,4 +1,5 @@
 #include "TelemetryJson.h"
+#include "DtcManager.h"
 #include "TelemetryConfig.h"
 
 void fillTelemetryJson(JsonDocument& doc, const ControlSnapshot& snap,
@@ -54,7 +55,7 @@ void fillTelemetryJson(JsonDocument& doc, const ControlSnapshot& snap,
     doc["offClutch"] = (int)telemetry.off_clutch_rpm;
     doc["tInput"]    = (int)telemetry.t_input_nm;
     doc["tqCut"]     = telemetry.torque_cut_active;
-    doc["dtcN"]      = telemetry.dtc_active_count;
+    doc["dtcN"]      = dtcManager.activeCount();   // service-task owned, not telemetry
     doc["spdHwOk"]   = telemetry.speed_hw_ok;
     doc["inTrust"]   = telemetry.input_speed_trusted;
     doc["tpsOk"]     = telemetry.tps_valid;

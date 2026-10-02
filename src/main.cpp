@@ -108,7 +108,7 @@ void core1PhysicsTask(void *pvParameters) {
         shiftScheduler.update();   // owns standby/garage Y4 windowing now (ATSG-correct)
 
         solenoids.update();
-        dtcManager.poll();         // edge the fault flags into the DTC store
+        dtcManager.sample();       // lock-free: build the fault mask, no array work
         controlBridge.publish(adaptives); // coherent read-only snapshot at 10 Hz
 
         // Loop-overrun accounting. The 1 kHz budget is 1000 us; running long silently
@@ -137,7 +137,8 @@ void core0DashboardTask(void *pvParameters) {
     webManager.begin(); // Control is already running before any Wi-Fi/filesystem work.
     while (true) {
         webManager.update();               // Core 0: DNS, cmd queue, WS telemetry, NVS
-        dtcManager.processFlush();          // persist DTC counts to NVS (throttled)
+        dtcManager.service();               // Core 0 owns the DTC store: count + timestamp
+        dtcManager.processFlush();          // persist counts (only when stopped in P/N)
         vTaskDelay(pdMS_TO_TICKS(5));       // 200Hz service loop; broadcast gate sets the real rate
     }
 }

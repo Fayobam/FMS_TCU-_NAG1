@@ -1,14 +1,23 @@
 // ============================================================================
 // FILE: DtcManager.h
 // VERSION: 1.0
-// Lightweight diagnostic trouble code store. Per-code saturating occurrence
-// counter (persisted to NVS across reboots) + a session "active" flag + last-seen
-// timestamp. Core 1 reports faults (poll() edges the telemetry flags; trip() logs
-// one-shot events); Core 0 persists + serves them to the dashboard.
+// Lightweight diagnostic trouble code store.
+//
+// OWNERSHIP RULE: the control task never touches the code arrays, and never takes a
+// lock. It calls sample() once per tick, which is a handful of comparisons plus at
+// most two atomic word writes, and trip() for one-shot events. The service task owns
+// _count/_active/_last_ms outright, so there is no mutex anywhere in this class —
+// diagnostics must not be able to stall a 1 kHz control loop, not even briefly.
+//
+// Transients are not lost to the slower service task: the control task detects rising
+// edges itself against its own private previous mask and OR-s them into _pending_trips,
+// so a fault lasting one millisecond is still counted. _condition_mask carries only
+// the live "is it asserted right now" view for display.
 // ============================================================================
 #pragma once
 #include <Arduino.h>
 #include <Preferences.h>
+#include <atomic>
 
 enum DtcCode : uint8_t {
     DTC_SPEED_N2N3_MISMATCH = 0, // N2/N3 disagree in gears 2/3/4 → bad speed sensor (BL-1)
@@ -27,9 +36,8 @@ enum DtcCode : uint8_t {
 
 const char* dtcName(uint8_t code);
 
-// One coherent copy of the whole store. Core 1 writes these arrays while Core 0
-// serializes them, so reading them field-by-field could mix pre- and post-clearAll
-// state in a single reply. Take a snapshot, then serialize outside the lock.
+// One coherent copy of the whole store, so a reply cannot mix pre- and post-clear
+// state. Cheap: the service task owns the arrays, so this is a plain copy.
 struct DtcSnapshot {
     uint16_t count[DTC_COUNT];
     bool     active[DTC_COUNT];
@@ -39,25 +47,32 @@ struct DtcSnapshot {
 class DtcManager {
   private:
     Preferences prefs;
+    // --- Service task only. No lock, because nothing else writes them. ---
     uint16_t _count[DTC_COUNT];     // saturating occurrence count, persisted
     bool     _active[DTC_COUNT];    // currently asserted (session only)
     uint32_t _last_ms[DTC_COUNT];   // last assertion time, millis (session only)
-    volatile bool _dirty = false;
+    bool     _dirty = false;
     unsigned long _last_flush_ms = 0;
-    // Guards the three arrays above. Core 1 trips/edges them, Core 0 persists and
-    // serves them. Held only for bounded POD copies — never across an NVS write.
-    portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;
+    uint8_t  _active_count = 0;
+
+    // --- Control task only. Private edge detector; never read by the other core. ---
+    uint32_t _prev_sample_mask = 0;
+
+    // --- The entire cross-core surface: three lock-free words. ---
+    std::atomic<uint32_t> _condition_mask{0};  // live asserted set, for display
+    std::atomic<uint32_t> _pending_trips{0};   // counted events, drained by the service task
+    std::atomic<bool>     _clear_requested{false};
+    static_assert(DTC_COUNT <= 32, "the masks above are 32-bit");
 
   public:
     void begin();
-    void setActive(DtcCode c, bool on);  // edge: count++ on false→true (continuous faults)
-    void trip(DtcCode c);                // one-shot discrete event (counted, not held active)
-    void poll();                         // edge the telemetry-derived faults — call on Core 1
-    void clearAll();                     // zero counts + persist (web "clear codes")
-    void processFlush();                 // Core 0: persist counts (throttled for NVS wear)
-
-    DtcSnapshot snapshot();              // coherent copy for Core 0 serialization
-    uint8_t  activeCount();
+    void sample();      // CONTROL task, every tick: build the mask. No lock, no arrays.
+    void trip(DtcCode c);  // either task: one-shot discrete event, atomic.
+    void requestClear();   // either task: ask the service task to zero the store.
+    void service();     // SERVICE task: drain edges, count, timestamp. Owns the arrays.
+    void processFlush();// SERVICE task: persist counts (gated on nvsWriteSafe()).
+    DtcSnapshot snapshot();
+    uint8_t  activeCount() const { return _active_count; }
 };
 
 extern DtcManager dtcManager;

@@ -354,7 +354,6 @@ struct TCU_Telemetry {
     bool is_slipping       = false;
     unsigned long slip_start_time_ms = 0;
     bool input_speed_trusted = true;   // N2/N3 plausible (locked in 2/3/4); false = bad speed sensor (BL-1)
-    uint8_t dtc_active_count = 0;       // number of currently-active DTCs (DtcManager owns)
     // Status strings are fixed buffers (NOT Arduino String) because Core 1 writes
     // them while Core 0 reads them in the telemetry JSON. A heap-backed String can
     // realloc mid-read and corrupt the heap across cores. The seq counter is a
@@ -444,6 +443,22 @@ struct TCU_Telemetry {
 };
 
 extern TCU_Telemetry telemetry;
+
+// ONE definition of "is it safe to write NVS right now?", used by every periodic
+// flush. An ESP32 flash erase disables the instruction cache, which stalls BOTH
+// cores regardless of which one issued the write — so a housekeeping write while
+// driving steals tens of milliseconds from a loop budgeted at one. Operator-initiated
+// writes do not need a separate rule: ControlBridge already refuses those unless the
+// car is stopped in P/N, which is strictly stricter than this.
+//
+// Engine rpm is deliberately NOT part of this: flushing learned values at a stoplight
+// in N with the engine running is exactly when it should happen.
+inline bool nvsWriteSafe() {
+    if (telemetry.output_rpm >= 50.0f || telemetry.turbine_rpm >= 50.0f) return false;
+    if (telemetry.prnd_state == 'P' || telemetry.prnd_state == 'N') return true;
+    // No lever harness: an open ATF circuit is the only P/N evidence available.
+    return telemetry.atf_only_selector && telemetry.atf_range_evidence == 1;
+}
 
 // ============================================================================
 // HIGH-RATE SHIFT DATALOGGER (bench tuning). Core 1 captures a compact sample

@@ -449,22 +449,44 @@ void test_throttle_stab_does_kickdown_when_the_guard_permits(void) {
 void test_atf_circuit_dtc_distinguishes_a_fault_from_park_neutral(void) {
     setupDriving(3, 500.0f);
     telemetry.atf_last_valid_ms = g_now_ms;          // sensor reading normally
-    dtcManager.poll();
+    dtcManager.sample(); dtcManager.service();
     TEST_ASSERT_FALSE_MESSAGE(dtcManager.snapshot().active[DTC_ATF_CIRCUIT],
         "a live ATF reading must not trip the circuit code");
 
     telemetry.drive_engaged = false;                 // parked, contact open
     telemetry.output_rpm = 0.0f;
     g_now_ms += ATF_MEASUREMENT_TIMEOUT_MS + 100;
-    dtcManager.poll();
+    dtcManager.sample(); dtcManager.service();
     TEST_ASSERT_FALSE_MESSAGE(dtcManager.snapshot().active[DTC_ATF_CIRCUIT],
         "an open contact at rest is P/N, not a fault");
 
     telemetry.drive_engaged = true;                  // moving in gear, still no reading
     telemetry.output_rpm = 500.0f;
-    dtcManager.poll();
+    dtcManager.sample(); dtcManager.service();
     TEST_ASSERT_TRUE_MESSAGE(dtcManager.snapshot().active[DTC_ATF_CIRCUIT],
         "motion in gear with no ATF measurement is a sensor or wiring fault");
+}
+
+// DTC work was moved off the control loop: the control task now only builds a mask,
+// and the service task (~200x slower) does the counting. The trap in that split is
+// losing short faults entirely, so the control task detects rising edges itself. A
+// fault that comes and goes between two service passes must still be counted once.
+void test_a_fault_shorter_than_a_service_pass_is_still_counted(void) {
+    setupDriving(3, 500.0f);
+    telemetry.atf_last_valid_ms = g_now_ms;
+    telemetry.tps_valid = true;
+    dtcManager.sample(); dtcManager.service();
+    const uint16_t before = dtcManager.snapshot().count[DTC_TPS_RAIL];
+
+    telemetry.tps_valid = false; dtcManager.sample();   // asserted for one tick
+    telemetry.tps_valid = true;  dtcManager.sample();   // and gone again
+    dtcManager.service();        // this pass never observes it asserted
+
+    const DtcSnapshot s = dtcManager.snapshot();
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(before + 1, s.count[DTC_TPS_RAIL],
+        "a fault shorter than one service pass must still be counted");
+    TEST_ASSERT_FALSE_MESSAGE(s.active[DTC_TPS_RAIL],
+        "but a fault that has cleared must not still read as active");
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +841,7 @@ int main(int, char**) {
     RUN_TEST(test_slow_throttle_squeeze_is_not_a_kickdown);
     RUN_TEST(test_throttle_stab_does_kickdown_when_the_guard_permits);
     RUN_TEST(test_atf_circuit_dtc_distinguishes_a_fault_from_park_neutral);
+    RUN_TEST(test_a_fault_shorter_than_a_service_pass_is_still_counted);
     RUN_TEST(test_bench_mode_shifts_with_every_sensor_dead);
     RUN_TEST(test_bench_mode_can_start_even_if_speed_is_present);
     RUN_TEST(test_bench_mode_stays_on_when_speed_appears);

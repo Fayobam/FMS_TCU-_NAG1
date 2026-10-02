@@ -25,6 +25,11 @@ const char* dtcName(uint8_t code) { return (code < DTC_COUNT) ? DTC_NAMES[code] 
 
 void DtcManager::begin() {
     for (int i = 0; i < DTC_COUNT; i++) { _active[i] = false; _last_ms[i] = 0; }
+    _prev_sample_mask = 0;
+    _condition_mask.store(0, std::memory_order_relaxed);
+    _pending_trips.store(0, std::memory_order_relaxed);
+    _clear_requested.store(false, std::memory_order_relaxed);
+    _active_count = 0;
     prefs.begin("tcu_dtc", false);
     if (prefs.getBytes("count", _count, sizeof(_count)) != sizeof(_count))
         for (int i = 0; i < DTC_COUNT; i++) _count[i] = 0;   // blank/!match flash
@@ -33,94 +38,89 @@ void DtcManager::begin() {
 
 // Continuous fault: count one occurrence on the rising edge only, so a fault that
 // persists for seconds is logged once (not once per 1 kHz tick).
-void DtcManager::setActive(DtcCode c, bool on) {
-    if (c >= DTC_COUNT) return;
-    portENTER_CRITICAL(&_mux);
-    if (on && !_active[c]) {
-        if (_count[c] < 0xFFFF) _count[c]++;
-        _last_ms[c] = millis();
-        _dirty = true;
-    }
-    _active[c] = on;
-    portEXIT_CRITICAL(&_mux);
-}
-
-// Discrete one-shot event: counted + timestamped, NOT held active (so it doesn't
-// inflate activeCount() forever after a single occurrence).
-void DtcManager::trip(DtcCode c) {
-    if (c >= DTC_COUNT) return;
-    portENTER_CRITICAL(&_mux);
-    if (_count[c] < 0xFFFF) _count[c]++;
-    _last_ms[c] = millis();
-    _dirty = true;
-    portEXIT_CRITICAL(&_mux);
-}
-
-void DtcManager::poll() {
+// ---------------------------------------------------------------------------
+// CONTROL TASK. Called every tick. No lock, no array access, no millis() arithmetic
+// beyond one subtraction: diagnostics must cost the 1 kHz loop effectively nothing.
+// ---------------------------------------------------------------------------
+void DtcManager::sample() {
     // On a bench the sensor lines are open by definition. Logging those four every
     // session would bury the real faults, so suppress them while test mode is on
     // (DTC_TEST_MODE already records that the unit was bench-driven).
-    bool sensors = !telemetry.test_mode;
-    setActive(DTC_SPEED_N2N3_MISMATCH, sensors && !telemetry.input_speed_trusted);
-    setActive(DTC_SPEED_HW_FAIL,       sensors && !telemetry.speed_hw_ok);
-    setActive(DTC_TPS_RAIL,            sensors && !telemetry.tps_valid);
-    setActive(DTC_MAP_RAIL,            sensors && !telemetry.map_valid);
-    setActive(DTC_LIMP_SLIP,            telemetry.is_limp_mode);
-    setActive(DTC_REVERSE_AT_SPEED,     telemetry.reverse_abuse_active);
-    // The ATF thermistor is in series with the P/N contact, so in a forward range the
-    // circuit MUST be closed and a valid reading must arrive every few ms. Moving in
-    // gear with no recent measurement is a sensor or wiring fault. It cannot false-
-    // trigger on a legitimately open contact in P/N, because the car is not moving in
-    // gear there. Worth a code because the failure is otherwise SILENT with a wired
-    // selector: the lever supplies the range, and the missing temperature only
-    // degrades fill pressure and backstop scaling. (In ATF-only mode the same fault
-    // is loud — it reads as permanent P/N, so the mode never authorizes.)
-    setActive(DTC_ATF_CIRCUIT, sensors && telemetry.drive_engaged
-        && telemetry.output_rpm > 200.0f
-        && (millis() - telemetry.atf_last_valid_ms) > ATF_MEASUREMENT_TIMEOUT_MS);
-    telemetry.dtc_active_count = activeCount();
+    const bool sensors = !telemetry.test_mode;
+    uint32_t m = 0;
+    if (sensors && !telemetry.input_speed_trusted) m |= 1u << DTC_SPEED_N2N3_MISMATCH;
+    if (sensors && !telemetry.speed_hw_ok)         m |= 1u << DTC_SPEED_HW_FAIL;
+    if (sensors && !telemetry.tps_valid)           m |= 1u << DTC_TPS_RAIL;
+    if (sensors && !telemetry.map_valid)           m |= 1u << DTC_MAP_RAIL;
+    if (telemetry.is_limp_mode)                    m |= 1u << DTC_LIMP_SLIP;
+    if (telemetry.reverse_abuse_active)            m |= 1u << DTC_REVERSE_AT_SPEED;
+    // The ATF thermistor is in series with the P/N contact, so an open circuit IS
+    // what P/N looks like and is not a fault. A forward range implies a closed
+    // contact, so motion in gear with no reading is a sensor or wiring fault.
+    if (sensors && telemetry.drive_engaged && telemetry.output_rpm > 200.0f
+        && (millis() - telemetry.atf_last_valid_ms) > ATF_MEASUREMENT_TIMEOUT_MS)
+                                                   m |= 1u << DTC_ATF_CIRCUIT;
+
+    // Count the rising edges HERE, against a mask only this task touches. The service
+    // task runs ~200x slower, so a fault that comes and goes inside one of its
+    // iterations would otherwise never be counted at all.
+    const uint32_t rising = m & ~_prev_sample_mask;
+    _prev_sample_mask = m;
+    if (rising) _pending_trips.fetch_or(rising, std::memory_order_relaxed);
+    _condition_mask.store(m, std::memory_order_relaxed);
 }
 
-uint8_t DtcManager::activeCount() {
+// One-shot discrete event: counted, never held active, so it cannot inflate
+// activeCount() forever after a single occurrence. Safe from either task.
+void DtcManager::trip(DtcCode c) {
+    if (c >= DTC_COUNT) return;
+    _pending_trips.fetch_or(1u << c, std::memory_order_relaxed);
+}
+
+void DtcManager::requestClear() { _clear_requested.store(true, std::memory_order_relaxed); }
+
+// ---------------------------------------------------------------------------
+// SERVICE TASK. Sole owner of the arrays below this line.
+// ---------------------------------------------------------------------------
+void DtcManager::service() {
+    if (_clear_requested.exchange(false, std::memory_order_relaxed)) {
+        for (int i = 0; i < DTC_COUNT; i++) { _count[i] = 0; _active[i] = false; _last_ms[i] = 0; }
+        _pending_trips.store(0, std::memory_order_relaxed);   // do not resurrect cleared codes
+        _dirty = true;
+    }
+    const uint32_t mask  = _condition_mask.load(std::memory_order_relaxed);
+    const uint32_t trips = _pending_trips.exchange(0, std::memory_order_relaxed);
+    const uint32_t now   = millis();
     uint8_t n = 0;
-    portENTER_CRITICAL(&_mux);
-    for (int i = 0; i < DTC_COUNT; i++) if (_active[i]) n++;
-    portEXIT_CRITICAL(&_mux);
-    return n;
+    for (uint8_t i = 0; i < DTC_COUNT; i++) {
+        const uint32_t bit = 1u << i;
+        if (trips & bit) {
+            if (_count[i] < 0xFFFF) _count[i]++;
+            _last_ms[i] = now;
+            _dirty = true;
+        }
+        _active[i] = (mask & bit) != 0;
+        if (_active[i]) n++;
+    }
+    _active_count = n;
 }
 
-void DtcManager::clearAll() {
-    portENTER_CRITICAL(&_mux);
-    for (int i = 0; i < DTC_COUNT; i++) { _count[i] = 0; _active[i] = false; _last_ms[i] = 0; }
-    _dirty = true;
-    portEXIT_CRITICAL(&_mux);
-    telemetry.dtc_active_count = 0;
-    for (int i = 0; i < DTC_COUNT; i++) { _count[i] = 0; _active[i] = false; _last_ms[i] = 0; }
-    telemetry.dtc_active_count = 0;
-    _dirty = true;
-}
-
-// Core 0 only (NVS can block). Persist no more than every 10 s to bound flash wear.
 void DtcManager::processFlush() {
+    // Flash erase disables the instruction cache and stalls BOTH cores, whichever one
+    // issued the write. A 1 kHz control loop cannot absorb that, so counts accumulate
+    // in RAM until the car is demonstrably stopped in P/N. Accepted cost: a reboot
+    // before the next stop loses the counts since the last flush.
+    if (!nvsWriteSafe()) return;
     if (!_dirty || (millis() - _last_flush_ms < 10000)) return;
-    // Copy first: prefs.putBytes() blocks on flash and must never run under a
-    // spinlock that the 1 kHz control task can contend for.
-    uint16_t counts[DTC_COUNT];
-    portENTER_CRITICAL(&_mux);
-    memcpy(counts, _count, sizeof(counts));
+    prefs.putBytes("count", _count, sizeof(_count));
     _dirty = false;
-    portEXIT_CRITICAL(&_mux);
-    prefs.putBytes("count", counts, sizeof(counts));
     _last_flush_ms = millis();
 }
 
-
 DtcSnapshot DtcManager::snapshot() {
     DtcSnapshot s;
-    portENTER_CRITICAL(&_mux);
     memcpy(s.count, _count, sizeof(s.count));
     memcpy(s.active, _active, sizeof(s.active));
     memcpy(s.last_ms, _last_ms, sizeof(s.last_ms));
-    portEXIT_CRITICAL(&_mux);
     return s;
 }

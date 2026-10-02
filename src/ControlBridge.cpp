@@ -87,7 +87,7 @@ void ControlBridge::consume(AdaptiveMemory& adaptives) {
         }
         telemetry.limp_reset_request = true;
         break;
-    case ControlAction::ClearDtcs: dtcManager.clearAll(); break;
+    case ControlAction::ClearDtcs: dtcManager.requestClear(); break;  // service task clears
     }
     state.store(2, std::memory_order_release);
 }

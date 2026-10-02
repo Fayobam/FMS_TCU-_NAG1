@@ -111,6 +111,10 @@ void AdaptiveMemory::nudge(uint8_t sclass, uint8_t shift_idx, uint8_t tbin, int 
 // Core 0 only (NVS can block 1-10ms). Flush dirty classes on the 60s timer or when
 // forced (P/N entry). One class write per call to bound latency.
 void AdaptiveMemory::processFlush() {
+    // The 60 s timer used to fire while driving, erasing flash and stalling the
+    // control loop mid-journey. _flush_now (P/N entry, bench, web edit) is also gated:
+    // the lever can reach N while still rolling, and the flag simply waits.
+    if (!nvsWriteSafe()) return;
     bool timer = (millis() - _last_flush_ms > 60000UL);
     if (!_flush_now && !timer) return;
 
