@@ -51,6 +51,10 @@ void NetworkManager::startAp() {
     IPAddress ip(192,168,4,1);
     apUp = WiFi.softAPConfig(ip, ip, IPAddress(255,255,255,0))
         && WiFi.softAP("7226-TCU", nullptr, 6, false, 4);
+    if (apUp) {
+        Serial.print("Fallback access point \"7226-TCU\" up: http://");
+        Serial.println(WiFi.softAPIP().toString().c_str());
+    }
     if (apUp && state != Connecting && state != Scanning) state = ApFallback;
 }
 void NetworkManager::scan() {
@@ -84,6 +88,14 @@ void NetworkManager::update() {
     if (connected && state != Connected) {
         state = Connected;
         stateSince = now;
+        // The address is the one thing an operator needs and cannot guess, and
+        // tcu.local only resolves where mDNS does. Printed on the transition only,
+        // so it can never become a repeating log on the control console.
+        Serial.print("Dashboard: http://");
+        Serial.print(WiFi.localIP().toString().c_str());
+        Serial.print("  (or http://");
+        Serial.print(HOSTNAME);
+        Serial.println(".local)");
         WiFi.scanDelete();
         if (mdnsUp) { MDNS.end(); mdnsUp = false; }
         lastMdnsTry = now - 10000;
