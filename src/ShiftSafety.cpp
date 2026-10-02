@@ -127,6 +127,7 @@ void ShiftScheduler::checkTpsROC() {
         return;
     }
     float roc = (telemetry.tps_pct - oldest) / (float)TPS_ROC_WINDOW_MS;  // %/ms
+    telemetry.tps_roc_pct_ms = roc;   // before the engagement gate: always observable
 
     if (!telemetry.drive_engaged) return;
 

@@ -70,6 +70,7 @@ class ShiftScheduler {
     bool     _ratio_flat = false;      // |Δratio| over the last sample < flat band (held between samples)
     uint32_t _last_speed_seq = 0;      // last speed_sample_seq the engine acted on (B-4)
     uint32_t _last_block_log_ms = 0;   // rate limit for the blocked-downshift log (1/s)
+    uint32_t _kickdown_armed_until_ms = 0;  // tip-in validity window (KICKDOWN_ARM_MS)
     unsigned long _sync_stable_since_ms; // when ratio first parked at target (sprag/timed catch)
     float    _output_rpm_at_catch_start; // coast-down decel-delta metric baseline
     unsigned long _catch_start_ms;

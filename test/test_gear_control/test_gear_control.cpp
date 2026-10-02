@@ -115,6 +115,19 @@ static void tickSyncing(uint8_t to_gear, uint32_t ms) {
     }
 }
 
+// Sweep the throttle from `a` to `b` over `ms` ticks. Kickdown now triggers on rate
+// of change, so a test that just assigns tps_pct is either an instant stab (a step
+// from 30 to 95 is ~3.25 %/ms of ROC) or, held constant, no event at all. Sweep rate
+// is what decides which case is under test.
+static void tickThrottle(float a, float b, uint32_t ms) {
+    for (uint32_t i = 0; i < ms; i++) {
+        telemetry.tps_pct = a + (b - a) * ((float)(i + 1) / (float)ms);
+        g_now_ms++;
+        sched.update();
+        sol.update();
+    }
+}
+
 // Run a shift to completion and stop the instant it returns to CRUISING.
 // Deliberately NOT "tick for 2 seconds": slip-limp arms 400 ms after a bad shift
 // ends, de-energises everything and re-derives the gear from ratio — which would
@@ -372,10 +385,17 @@ void test_moneyshift_guard_survives_dead_output_sensor(void) {
 // leave the cooldown untouched.
 void test_refused_kickdown_never_delays_overrev_protection(void) {
     setupDriving(3, 2600.0f, '3');       // SPORT AUTO @ ~99 km/h: kickdown is live
-    telemetry.tps_pct     = 95.0f;       // WOT -> kickdown evaluated every tick
-    telemetry.engine_rpm  = 3864.0f;     // below KICKDOWN_MAX_ENG_RPM (5200)
+    telemetry.engine_rpm  = 3864.0f;
     hwResetPins();
-    tick(50);
+    // A real tip-in, not a constant 95 %: with the rate-of-change trigger a held
+    // pedal never arms, and this test would pass without exercising kickdown at all.
+    // Prime at 85 %: already inside the kickdown range, but a steady pedal means
+    // ROC 0, so nothing is armed yet. Then stab. 85-100 % keeps the auto schedule
+    // inert at 98.8 km/h (upshift wants >=105, downshift wants <=55), so only the
+    // kickdown trigger can explain a shift here.
+    tickThrottle(85.0f, 85.0f, 30);
+    tickThrottle(85.0f, 100.0f, 40);     // ~0.38 %/ms: a stab
+    tickThrottle(100.0f, 100.0f, 10);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, telemetry.current_gear,
         "2nd would spin the turbine to ~6261 rpm: the kickdown must be refused");
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(PHASE_CRUISING, sched._current_phase,
@@ -388,6 +408,63 @@ void test_refused_kickdown_never_delays_overrev_protection(void) {
     tick(2);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(4, telemetry.target_gear,
         "overrev upshift must be immediate; a refused kickdown must not gate it");
+}
+
+// Kickdown is a pedal EVENT, not a throttle position. Squeezing gradually onto the
+// throttle up a long hill reaches the same 95 % as a stab, and must NOT be read as a
+// request for a lower gear — the old position-only trigger held true continuously
+// there. 4th at 3000 output rpm is chosen so the downshift guard would PERMIT 3rd
+// (predicted 4458 rpm) and the auto schedule wants neither gear: only the trigger
+// itself can explain the difference between these two cases.
+void test_slow_throttle_squeeze_is_not_a_kickdown(void) {
+    setupDriving(4, 2500.0f, '3');  // 95 km/h: schedule wants neither 3rd nor 5th
+    telemetry.engine_rpm = 2500.0f;
+    hwResetPins();
+    tickThrottle(30.0f, 30.0f, 25);
+    tickThrottle(30.0f, 95.0f, 2000);    // ~0.03 %/ms: below the stab threshold
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(4, telemetry.current_gear,
+        "a gradual squeeze to full throttle must not request a kickdown");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(PHASE_CRUISING, sched._current_phase,
+        "no shift may start from throttle POSITION alone");
+}
+
+// The same car, the same final throttle, reached as a stab: now it is a request.
+void test_throttle_stab_does_kickdown_when_the_guard_permits(void) {
+    setupDriving(4, 2500.0f, '3');  // 95 km/h: schedule wants neither 3rd nor 5th
+    telemetry.engine_rpm = 2500.0f;
+    hwResetPins();
+    tickThrottle(30.0f, 30.0f, 25);
+    tickThrottle(30.0f, 95.0f, 40);      // ~1.6 %/ms: a stab
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, telemetry.target_gear,
+        "a stab into the kickdown range must request the lower gear");
+    TEST_ASSERT_TRUE_MESSAGE(sched._current_phase != PHASE_CRUISING,
+        "the kickdown must actually start a shift");
+}
+
+// The ATF thermistor sits in series with the P/N contact, so an open circuit is
+// exactly what P/N looks like and is NOT a fault. Being in a forward range implies
+// the contact is closed, so motion in gear with no reading is a sensor or wiring
+// fault. The distinction is the whole test: a code that fired on an open contact
+// would light up every time the car was parked.
+void test_atf_circuit_dtc_distinguishes_a_fault_from_park_neutral(void) {
+    setupDriving(3, 500.0f);
+    telemetry.atf_last_valid_ms = g_now_ms;          // sensor reading normally
+    dtcManager.poll();
+    TEST_ASSERT_FALSE_MESSAGE(dtcManager.snapshot().active[DTC_ATF_CIRCUIT],
+        "a live ATF reading must not trip the circuit code");
+
+    telemetry.drive_engaged = false;                 // parked, contact open
+    telemetry.output_rpm = 0.0f;
+    g_now_ms += ATF_MEASUREMENT_TIMEOUT_MS + 100;
+    dtcManager.poll();
+    TEST_ASSERT_FALSE_MESSAGE(dtcManager.snapshot().active[DTC_ATF_CIRCUIT],
+        "an open contact at rest is P/N, not a fault");
+
+    telemetry.drive_engaged = true;                  // moving in gear, still no reading
+    telemetry.output_rpm = 500.0f;
+    dtcManager.poll();
+    TEST_ASSERT_TRUE_MESSAGE(dtcManager.snapshot().active[DTC_ATF_CIRCUIT],
+        "motion in gear with no ATF measurement is a sensor or wiring fault");
 }
 
 // ---------------------------------------------------------------------------
@@ -739,6 +816,9 @@ int main(int, char**) {
     RUN_TEST(test_shift_takes_y4_over_from_the_garage_pulse);
     RUN_TEST(test_moneyshift_guard_survives_dead_output_sensor);
     RUN_TEST(test_refused_kickdown_never_delays_overrev_protection);
+    RUN_TEST(test_slow_throttle_squeeze_is_not_a_kickdown);
+    RUN_TEST(test_throttle_stab_does_kickdown_when_the_guard_permits);
+    RUN_TEST(test_atf_circuit_dtc_distinguishes_a_fault_from_park_neutral);
     RUN_TEST(test_bench_mode_shifts_with_every_sensor_dead);
     RUN_TEST(test_bench_mode_can_start_even_if_speed_is_present);
     RUN_TEST(test_bench_mode_stays_on_when_speed_appears);

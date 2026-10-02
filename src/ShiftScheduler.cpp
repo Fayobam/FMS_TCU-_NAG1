@@ -415,24 +415,28 @@ void ShiftScheduler::checkKickdown() {
     if (!isForwardRange()) return;
     if (!currentMode().auto_shift) return;   // manual modes: the driver paddles for power
     if (millis() - telemetry.last_auto_shift_ms < AUTO_SHIFT_COOLDOWN_MS) return;
-    if (telemetry.tps_pct < KICKDOWN_TPS_PCT) return;
-    if (telemetry.engine_rpm > KICKDOWN_MAX_ENG_RPM) return;  // already high → don't overrev
+
+    // ARM on a tip-in taken INTO the kickdown range. Position alone is not a request:
+    // steady 75 % up a long hill held the old trigger true continuously. The arm window
+    // outlives the stab, because ROC decays within its own 20 ms ring, so the request
+    // survives long enough to be judged against the phase and guard conditions.
+    if (telemetry.tps_pct >= KICKDOWN_TPS_PCT
+        && telemetry.tps_roc_pct_ms >= KICKDOWN_TPS_ROC_PCT_MS) {
+        _kickdown_armed_until_ms = millis() + KICKDOWN_ARM_MS;
+    }
+    if (millis() >= _kickdown_armed_until_ms) return;   // no live tip-in
+    if (telemetry.tps_pct < KICKDOWN_TPS_PCT) return;   // foot eased off: no longer wanted
 
     uint8_t g = telemetry.current_gear;
     if (g <= 1) return;
-    // Do not REQUEST a downshift the money-shift guard will refuse. The kickdown
-    // gate is throttle-and-engine-rpm (TPS > 70 %, engine <= 5200), but the guard is
-    // on PREDICTED turbine in the lower gear, and the two do not coincide: at WOT in
-    // 4th above ~4040 output-equivalent rpm, 3rd would spin the turbine past 6000. A
-    // refusal does not arm last_auto_shift_ms (only a successful shift does), so
-    // without this pre-screen the request repeated every tick for as long as the
-    // throttle stayed down. Checking here rather than arming the shared cooldown on
-    // refusal keeps OVERREV protection immediate — that cooldown gates it too.
+    // The downshift guard decides whether the lower gear is survivable, and it is
+    // consulted BEFORE asking: a refusal must not re-ask every tick, because only a
+    // SUCCESSFUL shift arms last_auto_shift_ms. Checking here rather than arming that
+    // cooldown on refusal keeps OVERREV immediate — it is gated by the same cooldown.
     if (predictedDownshiftRpm(g - 1) > RPM_MAX_SAFE_DOWNSHIFT) return;
-    // beginShift still applies the same guard to every request; this only avoids
-    // asking. It remains the sole authority on whether a shift may start.
     if (beginShift(g - 1, false, "KICKDOWN")) {
         telemetry.last_auto_shift_ms = millis();
+        _kickdown_armed_until_ms = 0;        // one downshift per pedal event
     }
 }
 

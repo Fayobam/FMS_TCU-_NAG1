@@ -68,6 +68,7 @@ void fillTelemetryJson(JsonDocument& doc, const ControlSnapshot& snap,
         doc["gear"] = nullptr; doc["tgt"] = nullptr;
         doc["expectedRatio"] = nullptr; doc["targetRatio"] = nullptr;
     }
+    doc["tpsRocPctMs"] = telemetry.tps_roc_pct_ms;
     doc["loopOverrunSoft"] = telemetry.loop_overrun_soft;
     doc["loopOverrunHard"] = telemetry.loop_overrun_hard;
     doc["loopMaxUs"] = telemetry.loop_max_us;

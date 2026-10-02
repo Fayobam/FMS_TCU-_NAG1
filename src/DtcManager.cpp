@@ -19,6 +19,7 @@ static const char* DTC_NAMES[DTC_COUNT] = {
     "LOOP OVERRUN",
     "SHIFT UNVERIFIED",
     "TEST MODE USED",
+    "ATF SENSOR / CIRCUIT",
 };
 const char* dtcName(uint8_t code) { return (code < DTC_COUNT) ? DTC_NAMES[code] : "?"; }
 
@@ -66,6 +67,17 @@ void DtcManager::poll() {
     setActive(DTC_MAP_RAIL,            sensors && !telemetry.map_valid);
     setActive(DTC_LIMP_SLIP,            telemetry.is_limp_mode);
     setActive(DTC_REVERSE_AT_SPEED,     telemetry.reverse_abuse_active);
+    // The ATF thermistor is in series with the P/N contact, so in a forward range the
+    // circuit MUST be closed and a valid reading must arrive every few ms. Moving in
+    // gear with no recent measurement is a sensor or wiring fault. It cannot false-
+    // trigger on a legitimately open contact in P/N, because the car is not moving in
+    // gear there. Worth a code because the failure is otherwise SILENT with a wired
+    // selector: the lever supplies the range, and the missing temperature only
+    // degrades fill pressure and backstop scaling. (In ATF-only mode the same fault
+    // is loud — it reads as permanent P/N, so the mode never authorizes.)
+    setActive(DTC_ATF_CIRCUIT, sensors && telemetry.drive_engaged
+        && telemetry.output_rpm > 200.0f
+        && (millis() - telemetry.atf_last_valid_ms) > ATF_MEASUREMENT_TIMEOUT_MS);
     telemetry.dtc_active_count = activeCount();
 }
 

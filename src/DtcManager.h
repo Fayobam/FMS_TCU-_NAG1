@@ -21,6 +21,7 @@ enum DtcCode : uint8_t {
     DTC_LOOP_OVERRUN,            // 1 kHz physics loop missed its deadline (one-shot event)
     DTC_SHIFT_UNVERIFIED,        // shift hit its backstop without the ratio reaching target
     DTC_TEST_MODE,               // bench test mode was entered (provenance: this unit was bench-driven)
+    DTC_ATF_CIRCUIT,             // moving in gear with no ATF measurement → sensor/wiring fault
     DTC_COUNT                    // NOTE: appending here re-seeds the persisted count array once
 };
 

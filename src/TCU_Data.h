@@ -168,6 +168,10 @@ const float RATIO_OBSERVABLE_MIN_OUTPUT_RPM = 200.0f;
 const uint16_t SHIFT_BACKSTOP_HOT_MS  = 700;    // ATF >= 60 C
 const uint16_t SHIFT_BACKSTOP_COLD_MS = 1400;   // ATF <= 0 C
 const float    SHIFT_BACKSTOP_HOT_C   = 60.0f;
+// The ATF thermistor sits in series with the P/N contact, so in a forward range the
+// circuit MUST be closed and a reading must arrive every few ms. Longer than this
+// while moving in gear is a sensor or wiring fault, not an open contact.
+const uint32_t ATF_MEASUREMENT_TIMEOUT_MS = 2000;
 
 // --- INERTIA duration target by load% (0,10,...,100) ---
 // Shape from dueATC's driven #Shift_time_target_map (800 ms light-load -> 200 ms WOT): a long
@@ -253,7 +257,13 @@ const uint16_t TCC_POST_SHIFT_HOLD_MS = 300; // keep TCC fully open this long af
 
 // --- Kickdown arm (spec §4.6) ---
 const float KICKDOWN_TPS_PCT      = 70.0f;   // tps above which a power-down is evaluated
-const float KICKDOWN_MAX_ENG_RPM  = 5200.0f; // don't kickdown if already this high (would overrev)
+// Kickdown is a PEDAL EVENT, not a throttle position: a tip-in, not steady load.
+// Steady 75 % up a long hill is not a request for a lower gear. Both must hold.
+const float    KICKDOWN_TPS_ROC_PCT_MS = 0.15f;  // %/ms — same stab as the torque ROC
+const uint16_t KICKDOWN_ARM_MS         = 300;    // tip-in validity: ROC decays in ~20 ms
+// Replaces the old KICKDOWN_MAX_ENG_RPM engine-rpm ceiling. That was a proxy for
+// "would the lower gear overrev"; predictedDownshiftRpm() answers the real question
+// from two independent sensors, so the proxy is gone rather than kept alongside it.
 
 // --- Optional rusEFI torque-cut during power-up INERTIA (spec §9) ---
 // Asserting a timing-retard request lets the clutch absorb less energy per shift —
@@ -401,6 +411,7 @@ struct TCU_Telemetry {
     bool atf_has_measurement = false;
     uint32_t atf_last_valid_ms = 0;
 
+
     // --- Shift Diagnostics ---
     unsigned long last_shift_time_ms = 0;
     bool flare_detected = false;
@@ -408,6 +419,7 @@ struct TCU_Telemetry {
 
     // --- TPS Rate-of-Change Torque Mode ---
     bool high_torque_mode = false;
+    float tps_roc_pct_ms = 0.0f;  // published so a stab threshold can be read off real data
 
     // --- Current shift phase (broadcast to dashboard for chart) ---
     uint8_t shift_phase = 0; // mirrors ShiftPhase: 0=CRUISING 1=PREP 2=FILL 3=TORQUE 4=INERTIA
