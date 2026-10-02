@@ -1,24 +1,471 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#111315"><title>722.6 · Control Studio</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/css/app.css"></head>
-<body>
-<aside class="sidebar"><a class="brand" href="#overview"><span class="brand-mark">/ /</span><span>722.6<strong>CONTROL STUDIO</strong></span></a><div class="nav-caption">WORKSPACE</div><nav aria-label="Workspace"><a href="#overview"><span>01</span>Overview</a><a href="#analysis"><span>02</span>Shift analysis</a><a href="#maps"><span>03</span>Calibration maps</a><a href="#adaptation"><span>04</span>Adaptation</a><a href="#profile"><span>05</span>Engine &amp; sensors</a><a href="#diagnostics"><span>06</span>Diagnostics</a><a href="#network"><span>07</span>Network</a><a href="#bench"><span>08</span>Bench tools</a></nav><div class="sidebar-foot"><span class="status-dot"></span> STANDALONE TCU<small>722.6 / NAG1<br>Calibration workspace</small></div></aside>
-<main><header class="topbar"><div class="breadcrumb">TRANSMISSION <span>/</span> <b id="page-name">Overview</b></div><div class="connection"><span id="connection-dot" class="status-dot off"></span><span id="connection-label">Connecting</span><span class="sample-rate">10 Hz</span></div></header>
-<div id="offline" class="notice warning" role="status">Waiting for controller. Values remain unavailable until live telemetry arrives.</div><div id="fault-banner" class="notice fault" hidden></div>
-<div class="page-heading"><div><div class="eyebrow" id="page-kicker">LIVE TELEMETRY</div><h1 id="page-title">A clear view of every shift.</h1><p id="page-subtitle">Powertrain state, pressure commands and shaft speeds in one place.</p></div><div class="session-meta"><span>CONTROLLER UPTIME</span><b id="uptime">—</b></div></div>
-<section id="overview" class="page"><div class="overview-grid">
-<article class="panel gear-panel"><div class="panel-top"><h2>Transmission state</h2><span class="tag" data-field="prnd">—</span></div><div class="gear-display"><span data-field="gear">—</span><div><span class="eyebrow">TARGET</span><strong>→ <span data-field="tgt">—</span></strong></div></div><div class="gear-footer"><strong data-field="modeName">Awaiting controller</strong><span id="overview-state">NO LIVE DATA</span></div></article>
-<article class="panel speed-panel"><div class="panel-top"><h2>Shaft speeds</h2><span class="eyebrow">RPM</span></div><div class="rpm-primary"><span data-field="engRpm">—</span><small>ENGINE</small></div><div class="rpm-rail"><i id="rpm-bar"></i></div><div class="metrics three"><div><label>Turbine</label><b data-field="turbRpm">—</b></div><div><label>Output</label><b data-field="outRpm">—</b></div><div><label>Road speed <small>km/h</small></label><b data-field="kmh" data-digits="1">—</b></div></div></article>
-<article class="panel condition-panel"><div class="panel-top"><h2>Operating conditions</h2><span class="eyebrow">LIVE</span></div><div class="condition"><span>Throttle position</span><b><span data-field="tps" data-digits="1">—</span><small>%</small></b></div><div class="condition"><span>ATF temperature</span><b><span data-field="atfTemp" data-digits="1">—</span><small>°C</small></b><small id="atf-reading-status">Waiting for telemetry</small></div><div class="condition"><span>Engine load</span><b><span data-field="loadPct" data-digits="1">—</span><small>%</small></b></div><div class="condition"><span>Manifold pressure</span><b><span data-field="map">—</span><small>kPa</small></b></div></article>
-<article class="panel chart-panel"><div class="panel-top"><h2>Speed history</h2><span class="eyebrow">30 SECOND WINDOW</span></div><div class="chart-legend"><span class="legend engine">Engine</span><span class="legend turbine">Turbine</span><span class="legend output">Output</span></div><canvas id="speed-chart" aria-label="Rolling engine, turbine and output RPM chart" role="img"></canvas><div class="chart-foot"><span>RPM</span><span>−30 s<span>NOW</span></span></div></article>
-<article class="panel pressure-panel"><div class="panel-top"><h2>Hydraulic commands</h2><span class="eyebrow">%</span></div><div id="pressure-meters"></div><p class="footnote">MPC / SPC: 100% command = de-energized, maximum pressure. TCC uses normal duty polarity.</p></article>
-<article class="panel phase-panel"><div class="panel-top"><h2>Shift sequence</h2><span class="tag" data-field="phaseName">—</span></div><div id="overview-phases" class="phase-track"></div><div class="metrics three"><div><label>Last shift <small>ms</small></label><b data-field="shiftTime">—</b></div><div><label>Calculated ratio</label><b data-field="ratio" data-digits="3">—</b></div><div><label>TCC slip <small>rpm</small></label><b data-field="tccActual">—</b></div></div></article>
-</div><div class="footer-line"><span>Independent transmission control</span><span>Live values are read-only · Commands require explicit action</span></div></section>
-<section id="analysis" class="page" hidden><div class="split-heading"><h2>Shift sequence <span id="shift-pair">—</span></h2><span class="tag" data-field="className">—</span></div><article class="panel"><div id="analysis-phases" class="phase-track"></div><div id="shift-metrics" class="metrics four"></div><p class="footnote">Elapsed time is browser-observed at 10 Hz. Completed captures retain the firmware's 2 ms samples, up to 400 samples per shift.</p></article><article class="panel spaced"><div class="panel-top"><h2>Telemetry recorder</h2><div class="toolbar"><select id="chart-signal" aria-label="Chart channels"><option value="speed">Shaft speeds · rpm</option><option value="pressure">MPC / SPC / TCC · %</option><option value="slip">Clutch / TCC slip · rpm</option><option value="conditions">TPS / ATF · % / °C</option></select><select id="chart-source" aria-label="Chart source"><option value="live">Live · 30 s</option><option value="trace">Last shift capture</option></select><button id="export-trace" disabled>Export shift CSV ↗</button></div></div><canvas id="analysis-chart" class="large-chart" role="img" aria-label="Selected telemetry channels"></canvas><div id="analysis-legend" class="chart-legend"></div><p id="trace-info" class="footnote">No completed shift capture received this session.</p></article><article class="panel spaced"><div class="panel-top"><h2>Power path</h2><span class="eyebrow">SCHEMATIC · INFERRED FROM GEAR</span></div><div class="power-path"><span>ENGINE</span><span class="path-line"></span><span>CONVERTER</span><span class="path-line"></span><span id="path-gear">GEAR —</span><span class="path-line"></span><span>OUTPUT</span></div><div id="elements" class="elements"></div><p class="footnote">Element engagement is a gear-based illustration, not measured pressure. Clutch slip comes from the controller's speed model.</p></article></section>
-<section id="maps" class="page" hidden><div class="toolbar section-toolbar"><label>Calibration <select id="map-select"><option>Waiting for parameter registry</option></select></label><span id="map-dirty" class="tag">Not loaded</span><button id="map-reload">Reload</button><button id="map-apply" class="primary">Apply changes</button><button id="map-persist">Save to controller</button></div><article class="panel"><div class="panel-top"><h2 id="map-name">Calibration map</h2><span id="map-unit" class="eyebrow"></span></div><p id="map-help"></p><div id="map-grid" class="map-scroll"></div><div class="map-footer"><span>Click to select · type to edit · arrows to navigate · paste tab-separated cells</span><span class="operating-key">◉ Live operating point</span></div></article><div class="notice">Changes are staged in this browser. Apply requires engine off, stopped shafts and P/N. “Save to controller” persists applied tuning in NVS.</div><details class="panel spaced"><summary>Restore tuning defaults</summary><p>Resets shift-feel parameters, automatic schedules and drive-mode settings to firmware defaults.</p><button id="map-reset" class="danger">Restore and save defaults</button></details></section>
-<section id="adaptation" class="page" hidden><div class="toolbar section-toolbar"><label>Shift class <select id="adapt-class"><option value="0">Power upshift</option><option value="1">Coast upshift</option><option value="2">Power downshift</option><option value="3">Coast downshift</option></select></label><label>Learned correction <select id="adapt-field"><option value="0">Fill time · 20 ms cycles</option><option value="1">Fill pressure · %</option><option value="2">Apply pressure · %</option></select></label><span id="adapt-dirty" class="tag">Not loaded</span></div><article class="panel"><div class="panel-top"><h2>Learned shift corrections</h2><span class="eyebrow">TORQUE BINS · % OF REFERENCE</span></div><div id="adapt-grid" class="map-scroll"></div><p>Fill-time correction: ±5 cycles (±100 ms). Fill and apply pressure: ±15%. Automatic learning is temperature-gated by the controller.</p><div class="toolbar"><button id="adapt-reload">Reload learned values</button><button id="adapt-save" class="primary">Apply &amp; save corrections</button><button id="adapt-reset" class="danger">Reset all learned values</button></div></article><article class="panel spaced"><h2>Last completed shift</h2><p>Nudge the existing learned cell softer or firmer. The controller selects the last completed shift's class and torque bin.</p><div class="toolbar"><button id="nudge-soft">− Softer</button><button id="nudge-firm">+ Firmer</button></div></article></section>
-<section id="profile" class="page" hidden><div class="toolbar section-toolbar"><span id="profile-dirty" class="tag">Not loaded</span><button id="profile-reload">Reload profile</button><button id="profile-save" class="primary">Apply &amp; save profile</button></div><article class="panel"><div class="panel-top"><h2>Engine torque surface</h2><span class="eyebrow">RPM × MAP · Nm</span></div><div id="torque-grid" class="map-scroll"></div><p class="footnote">Firmware-provided RPM and MAP axes. Torque is estimated, not measured.</p></article><article class="panel spaced"><div class="panel-top"><h2>Selector source</h2><span class="tag" id="selector-status">Awaiting controller</span></div><p>ATF-only is an experimental manual mode using the shared ATF circuit and speed sensors. It requires no TRRS or CAN selector. Paddle shifts require a confirmed forward gear while moving; stopping requires fresh identification. Unknown range uses de-energized hydraulic operation, without electronic reverse-selection protection.</p><p>Secure the vehicle in P/N with the engine off before changing mode. The ATF circuit must read open. Bench validation is required before road use.</p><div class="toolbar"><button id="selector-enable" class="danger">Enable ATF-only...</button><button id="selector-disable">Restore wired selector...</button></div><p class="footnote">Saved on the controller. Normal TCC calibration is retained for confirmed forward operation. Unknown direction keeps TCC released.</p></article><div id="profile-fields" class="profile-grid spaced"></div><article class="panel spaced"><h2>Transmission variant</h2><p>Changing variant seeds its clutch-model defaults. Review the refreshed profile before making further edits.</p><div class="toolbar"><select id="variant" aria-label="Transmission variant"><option value="0">W5A330 · Small NAG</option><option value="1">W5A580 · Big NAG</option></select><button id="variant-save" class="danger">Apply variant &amp; seed clutch model</button></div></article></section>
-<section id="diagnostics" class="page" hidden><div id="health-grid" class="health-grid"></div><article class="panel spaced"><div class="panel-top"><h2>Diagnostic trouble codes</h2><div class="toolbar"><button id="dtc-reload">Refresh</button><button id="dtc-clear" class="danger">Clear history</button></div></div><div class="table-scroll"><table><thead><tr><th>Code</th><th>Description</th><th>Status</th><th>Occurrences</th><th>Last uptime</th></tr></thead><tbody id="dtc-body"><tr><td colspan="5">Connect to load diagnostics.</td></tr></tbody></table></div></article><article class="panel spaced"><h2>Controller signals</h2><div id="diagnostic-values" class="metrics four"></div><p class="footnote">Pulse status is reported independently for each shaft; no pulses can mean stopped or missing, and N3 can legitimately stop in some gears. The ATF circuit shares the P/N contact: an open contact and disconnected wiring can look alike. The main temperature display and chart show live measurements only. Battery and current readings require configured sensing hardware.</p><div class="toolbar"><button id="limp-reset" class="danger">Request limp recovery</button></div></article></section>
-<section id="network" class="page" hidden><div id="network-status" class="health-grid"></div><article class="panel spaced"><div class="panel-top"><h2>Telemetry delivery</h2><span class="eyebrow">SESSION DIAGNOSTICS</span></div><div id="delivery-status" class="health-grid"></div><p class="footnote">Snapshot age includes time held on the controller plus time since browser receipt; network transit time is not measured. Queue skips count individual client send attempts. Firmware counters reset at boot; browser counters reset when this page reloads.</p></article><article class="panel spaced"><div class="panel-top"><h2>Connection preferences</h2><button id="network-refresh">Refresh</button></div><div class="toolbar"><label>Connection mode <select id="network-mode"><option value="0">Automatic · STA with AP fallback</option><option value="1">Station only</option><option value="2">Access point only</option></select></label><button id="network-mode-save">Save mode</button></div><p>Automatic mode tries remembered networks in priority order. Fallback access stays available during station reconnection.</p><div id="known-networks"></div></article><article class="panel spaced"><h2>Remember a network</h2><form id="network-form"><div class="form-row"><label>Network name<input id="network-ssid" autocomplete="off" maxlength="32" required placeholder="Workshop Wi-Fi"></label><label>Password<input id="network-password" type="password" autocomplete="new-password" maxlength="63" placeholder="Empty for an open network"></label><button class="primary" type="submit">Remember network</button></div></form><p class="footnote">Up to five networks. Passwords are never returned to the browser. Settings changes may disconnect this session; commands are never replayed after reconnect.</p></article></section>
-<section id="bench" class="page" hidden><div class="notice warning">Bench mode changes controller behavior and permits direct output tests. Use only on a secured bench. It remains active until explicitly disabled or power-cycled, even if the browser disconnects.</div><article class="panel"><div class="panel-top"><h2>Circuit test session</h2><span class="tag" id="bench-status">Unknown</span></div><div class="toolbar"><button id="bench-enable" class="danger">Enter bench mode…</button><button id="bench-disable">Exit bench mode / release test outputs</button></div><div id="bench-controls" hidden><h3>Virtual selector</h3><div class="toolbar" id="bench-selector"></div><h3>Paddle requests</h3><div class="toolbar"><button id="paddle-down">− Downshift</button><button id="paddle-up">+ Upshift</button></div><h3>Output tests</h3><p>Percentages are commands, not measured current. Each activation requires confirmation.</p><div id="bench-outputs" class="output-grid"></div></div></article><article class="panel spaced"><h2>Input monitor</h2><div id="digital-inputs" class="elements"></div><div id="bench-values" class="metrics four"></div></article></section>
-<div id="toast" role="status" hidden></div></main><dialog id="confirm-dialog"><form method="dialog"><div class="eyebrow">CONFIRM CONTROLLER ACTION</div><h2 id="confirm-title"></h2><p id="confirm-text"></p><div class="toolbar"><button value="cancel">Cancel</button><button value="confirm" class="danger">Confirm action</button></div></form></dialog><noscript><div class="notice fault">JavaScript is required for this interface. Transmission control operates independently.</div></noscript>
-<script src="/js/telemetry.js"></script><script src="/js/charts.js"></script><script src="/js/maps.js"></script><script src="/js/network.js"></script><script src="/js/app.js"></script></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="theme-color" content="#111315">
+    <title>722.6 · Control Studio</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/css/app.css">
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="#overview"><span class="brand-mark">/ /</span><span>722.6<strong>CONTROL STUDIO</strong></span></a>
+      <div class="nav-caption">
+        WORKSPACE
+      </div>
+      <nav aria-label="Workspace">
+        <a href="#overview"><span>01</span>Overview</a>
+        <a href="#analysis"><span>02</span>Shift analysis</a>
+        <a href="#maps"><span>03</span>Calibration maps</a>
+        <a href="#adaptation"><span>04</span>Adaptation</a>
+        <a href="#profile"><span>05</span>Engine &amp; sensors</a>
+        <a href="#diagnostics"><span>06</span>Diagnostics</a>
+        <a href="#network"><span>07</span>Network</a>
+        <a href="#bench"><span>08</span>Bench tools</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="status-dot"></span>
+        STANDALONE TCU
+        <small>722.6 / NAG1<br>Calibration workspace</small>
+      </div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div class="breadcrumb">
+          TRANSMISSION
+          <span>/</span>
+          <b id="page-name">Overview</b>
+        </div>
+        <div class="connection">
+          <span id="connection-dot" class="status-dot off"></span>
+          <span id="connection-label">Connecting</span>
+          <span class="sample-rate">10 Hz</span>
+        </div>
+      </header>
+      <div id="offline" class="notice warning" role="status">
+        Waiting for controller. Values remain unavailable until live telemetry arrives.
+      </div>
+      <div id="fault-banner" class="notice fault" hidden>
+      </div>
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow" id="page-kicker">
+            LIVE TELEMETRY
+          </div>
+          <h1 id="page-title">A clear view of every shift.</h1>
+          <p id="page-subtitle">Powertrain state, pressure commands and shaft speeds in one place.</p>
+        </div>
+        <div class="session-meta">
+          <span>CONTROLLER UPTIME</span>
+          <b id="uptime">—</b>
+        </div>
+      </div>
+      <section id="overview" class="page">
+        <div class="overview-grid">
+          <article class="panel gear-panel">
+            <div class="panel-top">
+              <h2>Transmission state</h2>
+              <span class="tag" data-field="prnd">—</span>
+            </div>
+            <div class="gear-display">
+              <span data-field="gear">—</span>
+              <div>
+                <span class="eyebrow">TARGET</span>
+                <strong>→ <span data-field="tgt">—</span></strong>
+              </div>
+            </div>
+            <div class="gear-footer">
+              <strong data-field="modeName">Awaiting controller</strong>
+              <span id="overview-state">NO LIVE DATA</span>
+            </div>
+          </article>
+          <article class="panel speed-panel">
+            <div class="panel-top">
+              <h2>Shaft speeds</h2>
+              <span class="eyebrow">RPM</span>
+            </div>
+            <div class="rpm-primary">
+              <span data-field="engRpm">—</span>
+              <small>ENGINE</small>
+            </div>
+            <div class="rpm-rail">
+              <i id="rpm-bar"></i>
+            </div>
+            <div class="metrics three">
+              <div>
+                <label>Turbine</label>
+                <b data-field="turbRpm">—</b>
+              </div>
+              <div>
+                <label>Output</label>
+                <b data-field="outRpm">—</b>
+              </div>
+              <div>
+                <label>Road speed <small>km/h</small></label>
+                <b data-field="kmh" data-digits="1">—</b>
+              </div>
+            </div>
+          </article>
+          <article class="panel condition-panel">
+            <div class="panel-top">
+              <h2>Operating conditions</h2>
+              <span class="eyebrow">LIVE</span>
+            </div>
+            <div class="condition">
+              <span>Throttle position</span>
+              <b><span data-field="tps" data-digits="1">—</span><small>%</small></b>
+            </div>
+            <div class="condition">
+              <span>ATF temperature</span>
+              <b><span data-field="atfTemp" data-digits="1">—</span><small>°C</small></b>
+              <small id="atf-reading-status">Waiting for telemetry</small>
+            </div>
+            <div class="condition">
+              <span>Engine load</span>
+              <b><span data-field="loadPct" data-digits="1">—</span><small>%</small></b>
+            </div>
+            <div class="condition">
+              <span>Manifold pressure</span>
+              <b><span data-field="map">—</span><small>kPa</small></b>
+            </div>
+          </article>
+          <article class="panel chart-panel">
+            <div class="panel-top">
+              <h2>Speed history</h2>
+              <span class="eyebrow">30 SECOND WINDOW</span>
+            </div>
+            <div class="chart-legend">
+              <span class="legend engine">Engine</span>
+              <span class="legend turbine">Turbine</span>
+              <span class="legend output">Output</span>
+            </div>
+            <canvas id="speed-chart" aria-label="Rolling engine, turbine and output RPM chart" role="img">
+            </canvas>
+            <div class="chart-foot">
+              <span>RPM</span>
+              <span>−30 s<span>NOW</span></span>
+            </div>
+          </article>
+          <article class="panel pressure-panel">
+            <div class="panel-top">
+              <h2>Hydraulic commands</h2>
+              <span class="eyebrow">%</span>
+            </div>
+            <div id="pressure-meters">
+            </div>
+            <p class="footnote">MPC / SPC: 100% command = de-energized, maximum pressure. TCC uses normal duty polarity.</p>
+          </article>
+          <article class="panel phase-panel">
+            <div class="panel-top">
+              <h2>Shift sequence</h2>
+              <span class="tag" data-field="phaseName">—</span>
+            </div>
+            <div id="overview-phases" class="phase-track">
+            </div>
+            <div class="metrics three">
+              <div>
+                <label>Last shift <small>ms</small></label>
+                <b data-field="shiftTime">—</b>
+              </div>
+              <div>
+                <label>Calculated ratio</label>
+                <b data-field="ratio" data-digits="3">—</b>
+              </div>
+              <div>
+                <label>TCC slip <small>rpm</small></label>
+                <b data-field="tccActual">—</b>
+              </div>
+            </div>
+          </article>
+        </div>
+        <div class="footer-line">
+          <span>Independent transmission control</span>
+          <span>Live values are read-only · Commands require explicit action</span>
+        </div>
+      </section>
+      <section id="analysis" class="page" hidden>
+        <div class="split-heading">
+          <h2>Shift sequence <span id="shift-pair">—</span></h2>
+          <span class="tag" data-field="className">—</span>
+        </div>
+        <article class="panel">
+          <div id="analysis-phases" class="phase-track">
+          </div>
+          <div id="shift-metrics" class="metrics four">
+          </div>
+          <p class="footnote">Elapsed time is browser-observed at 10 Hz. Completed captures retain the firmware's 2 ms samples, up to 400 samples per shift.</p>
+        </article>
+        <article class="panel spaced">
+          <div class="panel-top">
+            <h2>Telemetry recorder</h2>
+            <div class="toolbar">
+              <select id="chart-signal" aria-label="Chart channels"><option value="speed">Shaft speeds · rpm</option><option value="pressure">MPC / SPC / TCC · %</option><option value="slip">Clutch / TCC slip · rpm</option><option value="conditions">TPS / ATF · % / °C</option></select>
+              <select id="chart-source" aria-label="Chart source"><option value="live">Live · 30 s</option><option value="trace">Last shift capture</option></select>
+              <button id="export-trace" disabled>Export shift CSV ↗</button>
+            </div>
+          </div>
+          <canvas id="analysis-chart" class="large-chart" role="img" aria-label="Selected telemetry channels">
+          </canvas>
+          <div id="analysis-legend" class="chart-legend">
+          </div>
+          <p id="trace-info" class="footnote">No completed shift capture received this session.</p>
+        </article>
+        <article class="panel spaced">
+          <div class="panel-top">
+            <h2>Power path</h2>
+            <span class="eyebrow">SCHEMATIC · INFERRED FROM GEAR</span>
+          </div>
+          <div class="power-path">
+            <span>ENGINE</span>
+            <span class="path-line"></span>
+            <span>CONVERTER</span>
+            <span class="path-line"></span>
+            <span id="path-gear">GEAR —</span>
+            <span class="path-line"></span>
+            <span>OUTPUT</span>
+          </div>
+          <div id="elements" class="elements">
+          </div>
+          <p class="footnote">Element engagement is a gear-based illustration, not measured pressure. Clutch slip comes from the controller's speed model.</p>
+        </article>
+      </section>
+      <section id="maps" class="page" hidden>
+        <div class="toolbar section-toolbar">
+          <label>Calibration <select id="map-select"><option>Waiting for parameter registry</option></select></label>
+          <span id="map-dirty" class="tag">Not loaded</span>
+          <button id="map-reload">Reload</button>
+          <button id="map-apply" class="primary">Apply changes</button>
+          <button id="map-persist">Save to controller</button>
+        </div>
+        <article class="panel">
+          <div class="panel-top">
+            <h2 id="map-name">Calibration map</h2>
+            <span id="map-unit" class="eyebrow"></span>
+          </div>
+          <p id="map-help"></p>
+          <div id="map-grid" class="map-scroll">
+          </div>
+          <div class="map-footer">
+            <span>Click to select · type to edit · arrows to navigate · paste tab-separated cells</span>
+            <span class="operating-key">◉ Live operating point</span>
+          </div>
+        </article>
+        <div class="notice">
+          Changes are staged in this browser. Apply requires engine off, stopped shafts and P/N. “Save to controller” persists applied tuning in NVS.
+        </div>
+        <details class="panel spaced">
+          <summary>Restore tuning defaults</summary>
+          <p>Resets shift-feel parameters, automatic schedules and drive-mode settings to firmware defaults.</p>
+          <button id="map-reset" class="danger">Restore and save defaults</button>
+        </details>
+      </section>
+      <section id="adaptation" class="page" hidden>
+        <div class="toolbar section-toolbar">
+          <label>Shift class <select id="adapt-class"><option value="0">Power upshift</option><option value="1">Coast upshift</option><option value="2">Power downshift</option><option value="3">Coast downshift</option></select></label>
+          <label>Learned correction <select id="adapt-field"><option value="0">Fill time · 20 ms cycles</option><option value="1">Fill pressure · %</option><option value="2">Apply pressure · %</option></select></label>
+          <span id="adapt-dirty" class="tag">Not loaded</span>
+        </div>
+        <article class="panel">
+          <div class="panel-top">
+            <h2>Learned shift corrections</h2>
+            <span class="eyebrow">TORQUE BINS · % OF REFERENCE</span>
+          </div>
+          <div id="adapt-grid" class="map-scroll">
+          </div>
+          <p>Fill-time correction: ±5 cycles (±100 ms). Fill and apply pressure: ±15%. Automatic learning is temperature-gated by the controller.</p>
+          <div class="toolbar">
+            <button id="adapt-reload">Reload learned values</button>
+            <button id="adapt-save" class="primary">Apply &amp; save corrections</button>
+            <button id="adapt-reset" class="danger">Reset all learned values</button>
+          </div>
+        </article>
+        <article class="panel spaced">
+          <h2>Last completed shift</h2>
+          <p>Nudge the existing learned cell softer or firmer. The controller selects the last completed shift's class and torque bin.</p>
+          <div class="toolbar">
+            <button id="nudge-soft">− Softer</button>
+            <button id="nudge-firm">+ Firmer</button>
+          </div>
+        </article>
+      </section>
+      <section id="profile" class="page" hidden>
+        <div class="toolbar section-toolbar">
+          <span id="profile-dirty" class="tag">Not loaded</span>
+          <button id="profile-reload">Reload profile</button>
+          <button id="profile-save" class="primary">Apply &amp; save profile</button>
+        </div>
+        <article class="panel">
+          <div class="panel-top">
+            <h2>Engine torque surface</h2>
+            <span class="eyebrow">RPM × MAP · Nm</span>
+          </div>
+          <div id="torque-grid" class="map-scroll">
+          </div>
+          <p class="footnote">Firmware-provided RPM and MAP axes. Torque is estimated, not measured.</p>
+        </article>
+        <article class="panel spaced">
+          <div class="panel-top">
+            <h2>Selector source</h2>
+            <span class="tag" id="selector-status">Awaiting controller</span>
+          </div>
+          <p>ATF-only is an experimental manual mode using the shared ATF circuit and speed sensors. It requires no TRRS or CAN selector. Paddle shifts require a confirmed forward gear while moving; stopping requires fresh identification. Unknown range uses de-energized hydraulic operation, without electronic reverse-selection protection.</p>
+          <p>Secure the vehicle in P/N with the engine off before changing mode. The ATF circuit must read open. Bench validation is required before road use.</p>
+          <div class="toolbar">
+            <button id="selector-enable" class="danger">Enable ATF-only...</button>
+            <button id="selector-disable">Restore wired selector...</button>
+          </div>
+          <p class="footnote">Saved on the controller. Normal TCC calibration is retained for confirmed forward operation. Unknown direction keeps TCC released.</p>
+        </article>
+        <div id="profile-fields" class="profile-grid spaced">
+        </div>
+        <article class="panel spaced">
+          <h2>Transmission variant</h2>
+          <p>Changing variant seeds its clutch-model defaults. Review the refreshed profile before making further edits.</p>
+          <div class="toolbar">
+            <select id="variant" aria-label="Transmission variant"><option value="0">W5A330 · Small NAG</option><option value="1">W5A580 · Big NAG</option></select>
+            <button id="variant-save" class="danger">Apply variant &amp; seed clutch model</button>
+          </div>
+        </article>
+      </section>
+      <section id="diagnostics" class="page" hidden>
+        <div id="health-grid" class="health-grid">
+        </div>
+        <article class="panel spaced">
+          <div class="panel-top">
+            <h2>Diagnostic trouble codes</h2>
+            <div class="toolbar">
+              <button id="dtc-reload">Refresh</button>
+              <button id="dtc-clear" class="danger">Clear history</button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Description</th>
+                  <th>Status</th>
+                  <th>Occurrences</th>
+                  <th>Last uptime</th>
+                </tr>
+              </thead>
+              <tbody id="dtc-body">
+                <tr>
+                  <td colspan="5">Connect to load diagnostics.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <article class="panel spaced">
+          <h2>Controller signals</h2>
+          <div id="diagnostic-values" class="metrics four">
+          </div>
+          <p class="footnote">Pulse status is reported independently for each shaft; no pulses can mean stopped or missing, and N3 can legitimately stop in some gears. The ATF circuit shares the P/N contact: an open contact and disconnected wiring can look alike. The main temperature display and chart show live measurements only. Battery and current readings require configured sensing hardware.</p>
+          <div class="toolbar">
+            <button id="limp-reset" class="danger">Request limp recovery</button>
+          </div>
+        </article>
+      </section>
+      <section id="network" class="page" hidden>
+        <div id="network-status" class="health-grid">
+        </div>
+        <article class="panel spaced">
+          <div class="panel-top">
+            <h2>Telemetry delivery</h2>
+            <span class="eyebrow">SESSION DIAGNOSTICS</span>
+          </div>
+          <div id="delivery-status" class="health-grid">
+          </div>
+          <p class="footnote">Snapshot age includes time held on the controller plus time since browser receipt; network transit time is not measured. Queue skips count individual client send attempts. Firmware counters reset at boot; browser counters reset when this page reloads.</p>
+        </article>
+        <article class="panel spaced">
+          <div class="panel-top">
+            <h2>Connection preferences</h2>
+            <button id="network-refresh">Refresh</button>
+          </div>
+          <div class="toolbar">
+            <label>Connection mode <select id="network-mode"><option value="0">Automatic · STA with AP fallback</option><option value="1">Station only</option><option value="2">Access point only</option></select></label>
+            <button id="network-mode-save">Save mode</button>
+          </div>
+          <p>Automatic mode tries remembered networks in priority order. Fallback access stays available during station reconnection.</p>
+          <div id="known-networks">
+          </div>
+        </article>
+        <article class="panel spaced">
+          <h2>Remember a network</h2>
+          <form id="network-form">
+            <div class="form-row">
+              <label>Network name<input id="network-ssid" autocomplete="off" maxlength="32" required placeholder="Workshop Wi-Fi"></label>
+              <label>Password<input id="network-password" type="password" autocomplete="new-password" maxlength="63" placeholder="Empty for an open network"></label>
+              <button class="primary" type="submit">Remember network</button>
+            </div>
+          </form>
+          <p class="footnote">Up to five networks. Passwords are never returned to the browser. Settings changes may disconnect this session; commands are never replayed after reconnect.</p>
+        </article>
+      </section>
+      <section id="bench" class="page" hidden>
+        <div class="notice warning">
+          Bench mode changes controller behavior and permits direct output tests. Use only on a secured bench. It remains active until explicitly disabled or power-cycled, even if the browser disconnects.
+        </div>
+        <article class="panel">
+          <div class="panel-top">
+            <h2>Circuit test session</h2>
+            <span class="tag" id="bench-status">Unknown</span>
+          </div>
+          <div class="toolbar">
+            <button id="bench-enable" class="danger">Enter bench mode…</button>
+            <button id="bench-disable">Exit bench mode / release test outputs</button>
+          </div>
+          <div id="bench-controls" hidden>
+            <h3>Virtual selector</h3>
+            <div class="toolbar" id="bench-selector">
+            </div>
+            <h3>Paddle requests</h3>
+            <div class="toolbar">
+              <button id="paddle-down">− Downshift</button>
+              <button id="paddle-up">+ Upshift</button>
+            </div>
+            <h3>Output tests</h3>
+            <p>Percentages are commands, not measured current. Each activation requires confirmation.</p>
+            <div id="bench-outputs" class="output-grid">
+            </div>
+          </div>
+        </article>
+        <article class="panel spaced">
+          <h2>Input monitor</h2>
+          <div id="digital-inputs" class="elements">
+          </div>
+          <div id="bench-values" class="metrics four">
+          </div>
+        </article>
+      </section>
+      <div id="toast" role="status" hidden>
+      </div>
+    </main>
+    <dialog id="confirm-dialog">
+      <form method="dialog">
+        <div class="eyebrow">
+          CONFIRM CONTROLLER ACTION
+        </div>
+        <h2 id="confirm-title"></h2>
+        <p id="confirm-text"></p>
+        <div class="toolbar">
+          <button value="cancel">Cancel</button>
+          <button value="confirm" class="danger">Confirm action</button>
+        </div>
+      </form>
+    </dialog>
+    <noscript>
+      <div class="notice fault">
+        JavaScript is required for this interface. Transmission control operates independently.
+      </div>
+    </noscript>
+    <script src="/js/telemetry.js"></script>
+    <script src="/js/charts.js"></script>
+    <script src="/js/maps.js"></script>
+    <script src="/js/network.js"></script>
+    <script src="/js/app.js"></script>
+  </body>
+</html>

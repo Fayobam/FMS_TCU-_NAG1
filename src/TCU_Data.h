@@ -168,6 +168,14 @@ const float RATIO_OBSERVABLE_MIN_OUTPUT_RPM = 200.0f;
 const uint16_t SHIFT_BACKSTOP_HOT_MS  = 700;    // ATF >= 60 C
 const uint16_t SHIFT_BACKSTOP_COLD_MS = 1400;   // ATF <= 0 C
 const float    SHIFT_BACKSTOP_HOT_C   = 60.0f;
+
+// Minimum usable TPS calibration span. The old guard only demanded that WOT exceed
+// closed by 10 mV, which rejects an INVERTED calibration but accepts an unusable one:
+// at a 50 mV span each ADC count is several percent of throttle, so post-filter noise
+// alone swings the reading across its whole range. Phantom WOT is worse than a stuck
+// zero — it feeds kickdown, high-torque mode, line pressure and the limp load gate.
+// 0.5 V keeps one percent of throttle above the ESP32 ADC noise floor (~10 mV).
+const float    TPS_MIN_CAL_SPAN_V     = 0.5f;
 // The ATF thermistor sits in series with the P/N contact, so in a forward range the
 // circuit MUST be closed and a reading must arrive every few ms. Longer than this
 // while moving in gear is a sensor or wiring fault, not an open contact.

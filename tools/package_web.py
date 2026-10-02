@@ -13,8 +13,11 @@ def bundle(project):
     def script(match):
         path = root / match[1].lstrip('/')
         return '<script>\n' + path.read_text(encoding='utf-8') + '\n</script>'
-    html = re.sub(r'<link rel="stylesheet" href="([^"]+)">', stylesheet, html)
-    html = re.sub(r'<script src="([^"]+)"></script>', script, html)
+    # Whitespace-tolerant so the bundler is not coupled to how data/ is formatted.
+    # tools/format_web.py keeps these tags on one line, but a future formatting
+    # change must not be able to silently stop inlining an asset.
+    html = re.sub(r'<link\s[^>]*rel="stylesheet"[^>]*href="([^"]+)"[^>]*>', stylesheet, html)
+    html = re.sub(r'<script\s+src="([^"]+)"\s*>\s*</script>', script, html)
     if re.search(r'<(?:script[^>]+src|link[^>]+stylesheet[^>]+href)=', html):
         raise ValueError('Unbundled asset reference')
     return html.encode('utf-8')

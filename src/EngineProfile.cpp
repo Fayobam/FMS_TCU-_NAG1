@@ -43,6 +43,18 @@ void EngineProfile::begin() {
         prefs.getBytes("data", &d, sizeof(d));
         if (d.magic == EP_MAGIC) {
             Serial.println("Engine profile loaded from flash.");
+            // Self-heal a calibration this firmware could already have stored before
+            // the span rule tightened. An unusable span is not a tuning preference to
+            // preserve: it makes the throttle read noise. Loud, and only these two
+            // fields are touched.
+            if (d.tps_wot_v - d.tps_closed_v < TPS_MIN_CAL_SPAN_V) {
+                Serial.print("TPS calibration span unusable - restoring 0.50/2.90 V (was ");
+                Serial.print((int)((d.tps_wot_v - d.tps_closed_v) * 1000.0f));
+                Serial.println(" mV).");
+                d.tps_closed_v = 0.50f;
+                d.tps_wot_v    = 2.90f;
+                save();
+            }
             applyTransVariant();
             return;
         }

@@ -82,7 +82,10 @@ const char* profile(JsonDocument& doc, ControlCommand& out) {
             if (ft.size() == 4) p->fill_t[i] = ft[i].as<uint16_t>();
         }
 
-    if (p->tps_wot_v <= p->tps_closed_v + 0.01f) return "TPS WOT must exceed closed voltage";
+    // Cross-field: the rule table above validates each voltage in isolation, so only
+    // this can reject a pair that is individually in range but jointly unusable.
+    if (p->tps_wot_v - p->tps_closed_v < TPS_MIN_CAL_SPAN_V)
+        return "TPS span too small: WOT must exceed closed by at least 0.5 V";
     return nullptr;
 }
 }
