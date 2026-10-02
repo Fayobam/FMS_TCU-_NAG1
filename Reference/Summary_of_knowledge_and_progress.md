@@ -36,6 +36,8 @@ and web-editable — `EngineProfile.h/.cpp`), so an engine swap is a data change
 Gearbox-side constants (ratios, K=1.641) stay compile-time; the learned adaptation trims sit on
 top of the profile's baselines. See §2.
 
+**Operating rule (keep it simple):** we command **open-loop pressure-%** (no current sensing, no OEM mA/bar tables). Shift *progress* is watched with **N2/N3 clutch slip**. Power shifts close a P-loop on on-coming clutch speed (confident, felt, as short as the clutch will take). Coast/traffic stays open-loop and slow. The driver can nudge the last shift firmer/softer (OF Gear style); fill *time* also self-trims from when the off-going clutch actually moved.
+
 **Four shift classes** (ATSG p.77 adaptation categories):
 
 | Class | Trigger | Phase path | Character |
@@ -261,7 +263,7 @@ single biggest "sharp without sacrificing health" lever.
 
 ## 13. Web Dashboard
 
-AP `FMS_TCU`/`shiftfast` → `http://192.168.4.1`. 100 Hz telemetry (gate corrected from 10 Hz).
+STA to the workshop WiFi (DevKit LED blinks while joining, solid when up) → `http://fms-tcu.local` or the DHCP IP on serial. Dashboard is gzip-baked into the firmware (SPIFFS only needed for `three.min.js`). ~60 Hz telemetry.
 
 Phase 9b is **done**: the tuner now speaks `get_cells`/`set_cells` (Adaptation v2, 4×4×4 cells ×
 3 fields), there's an **Engine Profile** tab (`get_profile`/`set_profile` — 8×8 torque surface,
