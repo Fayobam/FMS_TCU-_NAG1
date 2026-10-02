@@ -130,8 +130,24 @@ int main() {
     telemetry.shift_phase=0; assert(apply()); assert(telemetry.atf_only_selector);
     c.action=ControlAction::TestMode;c.value=1; assert(!apply());
     c.action=ControlAction::AtfSelector;c.value=0;
-    g_now_ms+=21; assert(!apply()); // stale open indication
-    telemetry.atf_sample_ms=millis(); assert(apply()); assert(!telemetry.atf_only_selector);
+    // Leaving the experimental mode must NOT depend on ATF health. Disabling hands
+    // authority back to the TRRS and the normal resync path, so stale evidence must
+    // not be able to strand the controller in the inferred-authority mode.
+    g_now_ms+=21; assert(apply()); assert(!telemetry.atf_only_selector);
+    // Enabling still demands fresh OPEN evidence, in both order of operations.
+    telemetry.atf_sample_ms=millis();telemetry.atf_range_evidence=1;
+    c.value=1; assert(apply()); assert(telemetry.atf_only_selector);
+    // The lockout case: a sensor that fails reading "engaged" cannot re-enable the
+    // mode, and critically cannot keep it on either — it is persisted to NVS, so a
+    // reboot would not clear it.
+    telemetry.atf_range_evidence=2;
+    c.value=1; assert(!apply());
+    c.value=0; assert(apply()); assert(!telemetry.atf_only_selector);
+    // Movement still blocks BOTH directions: no mode switch while the shafts turn.
+    telemetry.atf_range_evidence=1;telemetry.atf_sample_ms=millis();
+    c.value=1; assert(apply()); assert(telemetry.atf_only_selector);
+    telemetry.output_rpm=100; c.value=0; assert(!apply()); assert(telemetry.atf_only_selector);
+    telemetry.output_rpm=0; assert(apply()); assert(!telemetry.atf_only_selector);
     source={};source.data.atf_only_selector=true;
     fillTelemetryJson(packet,source,1,170000,true);
     assert(packet["gear"].isNull() && packet["targetRatio"].isNull());

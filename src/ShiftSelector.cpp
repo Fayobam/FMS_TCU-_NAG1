@@ -108,7 +108,14 @@ bool ShiftScheduler::updateAtfSelector() {
     telemetry.paddle_up_request = telemetry.paddle_down_request = false;
     telemetry.torque_cut_active = false;
     telemetry.shift_phase = 0;
-    telemetry.road_kmh = telemetry.output_rpm * engineProfile.kmhPerOutRpm();
+    // update() returns early from here, so anything it would normally derive stops
+    // refreshing. Keep the dashboard-visible values live: a frozen load_pct reading
+    // 85 % while the valve body sits de-energized reads as a live measurement.
+    telemetry.road_kmh   = telemetry.output_rpm * engineProfile.kmhPerOutRpm();
+    telemetry.t_est_nm   = engineProfile.estimateTorque(telemetry.engine_rpm, telemetry.map_kpa);
+    telemetry.load_pct   = engineProfile.loadPct(telemetry.engine_rpm, telemetry.map_kpa);
+    telemetry.t_input_nm = engineProfile.inputTorque(telemetry.engine_rpm, telemetry.turbine_rpm,
+                                                    telemetry.map_kpa);
     _current_phase = PHASE_CRUISING;
     _gear_resync_pending = false;
     _last_adapt_valid = false;

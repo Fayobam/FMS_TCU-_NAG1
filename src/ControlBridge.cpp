@@ -31,9 +31,17 @@ void ControlBridge::consume(AdaptiveMemory& adaptives) {
     case ControlAction::AtfSelector:
         // No TRRS requirement: mode must be selectable with that harness absent.
         // The operator must secure the vehicle; speed-sensor silence is not proof of rest.
-        if (!stopped || telemetry.shift_phase != 0 || telemetry.test_mode
-            || !telemetry.atf_sampled || millis() - telemetry.atf_sample_ms > 20
-            || telemetry.atf_range_evidence != 1) { accepted = false; break; }
+        //
+        // Both directions require a stopped, non-shifting, non-bench controller. Only
+        // ENABLING requires fresh open-circuit evidence, because that is the direction
+        // that hands gear authority to inferred evidence. DISABLING hands authority
+        // back to the TRRS and the normal resync path — the better-verified of the
+        // two — so gating it on a healthy ATF reading is backwards: a sensor that
+        // failed reading "engaged" would latch the experimental mode on, and it is
+        // persisted to NVS, so a reboot would not clear it either.
+        if (!stopped || telemetry.shift_phase != 0 || telemetry.test_mode) { accepted = false; break; }
+        if (c.value && (!telemetry.atf_sampled || millis() - telemetry.atf_sample_ms > 20
+            || telemetry.atf_range_evidence != 1)) { accepted = false; break; }
         telemetry.atf_only_selector = c.value != 0;
         telemetry.atf_forward_confirmed = false;
         telemetry.drive_engaged = false;
