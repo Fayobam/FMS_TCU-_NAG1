@@ -2,6 +2,9 @@
 #include <iostream>
 #include "NetworkManager.h"
 
+// Must match AP_RETIRE_MS in NetworkManager.cpp (+1 to clear the >= boundary).
+#define AP_RETIRE_DWELL 10001
+
 void configure(tcu::NetworkManager& manager,const char* json,bool valid=true){JsonDocument d;assert(!deserializeJson(d,json));assert((manager.configure(d)==nullptr)==valid);}
 int main(){
     using Manager=tcu::NetworkManager;
@@ -15,7 +18,24 @@ int main(){
     WiFi.visible={{"Home",-30},{"Workshop",-80}};WiFi.result=2;manager.update();assert(WiFi.selected=="Workshop");
     // Bad password / failed association must try the next known visible network.
     g_now_ms+=12000;manager.update();assert(WiFi.selected=="Home");
-    WiFi.link=WL_CONNECTED;manager.update();JsonDocument status;manager.describe(status);assert(status["state"]=="CONNECTED");assert(manager.apActive());
+    WiFi.link=WL_CONNECTED;WiFi.apClients=1;manager.update();JsonDocument status;manager.describe(status);assert(status["state"]=="CONNECTED");assert(manager.apActive());
+    // A client is using the fallback AP: it must survive, dwell or no dwell.
+    g_now_ms+=60000;manager.update();assert(manager.apActive());
+    // Nobody on it now, but the dwell has already elapsed in the line above, so the
+    // next update retires it. AP+STA is one radio on one channel; holding an unused
+    // AP costs the station link real airtime.
+    WiFi.apClients=0;manager.update();assert(!manager.apActive());assert(WiFi.link==WL_CONNECTED);
+    // Losing the station link brings the AP back on the existing fallback path. The
+    // loss must be OBSERVED before the fallback timer means anything.
+    WiFi.link=WL_DISCONNECTED;manager.update();assert(!manager.apActive());
+    g_now_ms+=20001;manager.update();assert(manager.apActive());
+    // Reconnecting restarts the dwell instead of retiring the AP on the same tick.
+    WiFi.link=WL_CONNECTED;manager.update();assert(manager.apActive());
+    g_now_ms+=AP_RETIRE_DWELL;manager.update();assert(!manager.apActive());
+    // Hand the rest of the suite its original state: AP up, station connected, and a
+    // client associated, so AP retirement stays clear of the scan-backoff assertions.
+    WiFi.link=WL_DISCONNECTED;manager.update();g_now_ms+=20001;manager.update();assert(manager.apActive());
+    WiFi.link=WL_CONNECTED;WiFi.apClients=1;manager.update();assert(manager.apActive());
     std::string wire;serializeJson(status,wire);assert(wire.find("password1")==std::string::npos);assert(wire.find("password2")==std::string::npos);
     int scans=WiFi.scans;g_now_ms+=120000;manager.update();assert(WiFi.scans==scans);
     // Loss starts recovery without touching the fallback AP.

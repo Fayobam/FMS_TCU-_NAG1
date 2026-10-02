@@ -20,11 +20,12 @@ struct IPAddress {
 struct WiFiStub {
     struct Visible{std::string ssid;int rssi;};
     int link=WL_DISCONNECTED,modeValue=0,result=WIFI_SCAN_RUNNING,scans=0,attempts=0,apAttempts=0;
-    bool apResult=true,ap=false;std::string selected;std::vector<Visible> visible;
+    bool apResult=true,ap=false;int apClients=0;std::string selected;std::vector<Visible> visible;
     void persistent(bool){}void setAutoReconnect(bool){}void setHostname(const char*){}void setSleep(bool){}
     void mode(int v){modeValue=v;}
     void disconnect(bool,bool){link=WL_DISCONNECTED;}
     void softAPdisconnect(bool){ap=false;}
+    int softAPgetStationNum()const{return apClients;}
     bool softAPConfig(IPAddress,IPAddress,IPAddress){return true;}
     bool softAP(const char*,const char*,int,bool,int){++apAttempts;ap=apResult;return apResult;}
     int scanNetworks(bool async){assert(async);++scans;result=WIFI_SCAN_RUNNING;return result;}

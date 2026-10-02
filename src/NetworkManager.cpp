@@ -6,7 +6,7 @@
 
 namespace tcu {
 static constexpr uint32_t SETTINGS_MAGIC = 0x4E455431;
-static constexpr uint32_t CONNECT_MS = 12000, SCAN_MS = 60000, FALLBACK_MS = 20000;
+static constexpr uint32_t CONNECT_MS = 12000, SCAN_MS = 60000, FALLBACK_MS = 20000, AP_RETIRE_MS = 10000;
 static const char* HOSTNAME = "tcu";
 
 void NetworkManager::begin() {
@@ -83,6 +83,7 @@ void NetworkManager::update() {
     bool connected = settings.mode != AccessPointOnly && WiFi.status() == WL_CONNECTED;
     if (connected && state != Connected) {
         state = Connected;
+        stateSince = now;
         WiFi.scanDelete();
         if (mdnsUp) { MDNS.end(); mdnsUp = false; }
         lastMdnsTry = now - 10000;
@@ -97,6 +98,26 @@ void NetworkManager::update() {
         lastMdnsTry = now;
         mdnsUp = MDNS.begin(HOSTNAME);
         if (mdnsUp) MDNS.addService("http", "tcp", 80);
+    }
+    // Retire the fallback AP once the station link has settled. ESP32 AP+STA is ONE
+    // radio on ONE channel: associating to a router on another channel drags the
+    // softAP off its configured channel onto the router's, and the station link then
+    // time-shares airtime with AP beacons and management traffic. The result is
+    // jittery throughput rather than a clean failure — which is what a stalling
+    // dashboard looks like. Nothing else ever cleared apUp in Automatic mode, so a
+    // single slow-router boot (the 20 s FALLBACK_MS path) left the AP up for the
+    // rest of the session.
+    //
+    // Only drop it when nobody is associated, so a browser working over the AP is
+    // never kicked off mid-session. If the station link later drops, the same
+    // FALLBACK_MS path brings the AP straight back.
+    if (connected && apUp && settings.mode == Automatic && now - stateSince >= AP_RETIRE_MS
+        && WiFi.softAPgetStationNum() == 0) {
+        WiFi.softAPdisconnect(true);          // also drops the AP interface
+        apUp = false;
+        WiFi.setSleep(false);                 // mode changes can restore power save
+        if (mdnsUp) { MDNS.end(); mdnsUp = false; }   // re-announce on station only
+        lastMdnsTry = now - 10000;
     }
     if (connected) return;
     if (!apUp && settings.mode != StationOnly && now - lastApTry >= 10000
