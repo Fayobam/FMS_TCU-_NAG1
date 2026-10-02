@@ -5,3 +5,7 @@
 .vscode/ipch
 *.bin
 *.elf
+src/WifiSecrets.h
+__pycache__/
+include/tcu_index_html.h
+preview.html
