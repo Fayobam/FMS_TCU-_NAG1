@@ -76,7 +76,10 @@ def top_level_redeclarations(code):
     return {k: v for k, v in seen.items() if len(v) > 1}
 
 def main(path):
-    src = open(path, encoding='utf-8', errors='replace').read()
+    from pathlib import Path
+    from package_web import bundle
+    # Check the exact bundled modules served by the ESP32, not empty script tags.
+    src = bundle(Path(path).resolve().parent.parent).decode('utf-8')
     blocks = re.findall(r'<script[^>]*>(.*?)</script>', src, re.S)
     bad = False
     print('%s: %d inline script block(s)' % (path, len(blocks)))

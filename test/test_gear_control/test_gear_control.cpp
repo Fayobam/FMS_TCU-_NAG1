@@ -20,6 +20,7 @@
 #include "ShiftScheduler.h"
 #include "TuneOverlay.h"
 #include <string.h>
+#include "InputManager.h"
 
 // Globals normally defined in main.cpp (which the native env excludes).
 TCU_Telemetry telemetry;
@@ -68,8 +69,13 @@ static void setupDriving(uint8_t gear, float out_rpm, char lever = '2') {
     telemetry.is_limp_mode  = false;
     telemetry.is_slipping   = false;
     telemetry.input_speed_trusted = true;
+    telemetry.n2_signal_recent = telemetry.n3_signal_recent = true;
+    telemetry.output_signal_recent = telemetry.engine_signal_recent = true;
     telemetry.paddle_up_request   = false;
     telemetry.paddle_down_request = false;
+    telemetry.test_mode = false;
+    telemetry.test_mode_cmd = 0;
+    telemetry.test_sol_req = 0;
     telemetry.last_auto_shift_ms  = 0;
     telemetry.reverse_abuse_active = false;
     telemetry.flare_detected = false;
@@ -365,6 +371,8 @@ static void setupBench() {
     telemetry.engine_rpm = 0.0f; telemetry.tps_pct = 0.0f;
     telemetry.map_kpa = 100.0f;  telemetry.atf_temp_c = 40.0f;
     telemetry.test_mode = false; telemetry.test_mode_cmd = 0;
+    telemetry.test_sol_req = 0; telemetry.test_sol_req_v = 0;
+    telemetry.adapt_nudge_cmd = 0;
     telemetry.paddle_up_request = false; telemetry.paddle_down_request = false;
     telemetry.is_limp_mode = false; telemetry.is_slipping = false;
     telemetry.last_auto_shift_ms = 0;
@@ -398,35 +406,286 @@ void test_bench_mode_shifts_with_every_sensor_dead(void) {
         "the shift must latch even though no ratio could ever confirm it");
 }
 
-// Entry is refused in a moving car: bench mode suspends slip-limp and the automatic
-// layers, none of which is safe to switch off at road speed.
-void test_bench_mode_refuses_to_start_while_moving(void) {
+// Circuit confirmation uses a signal generator, so speed on the pins must NOT
+// block entry or cancel the mode. The dashboard asks before enabling.
+void test_bench_mode_can_start_even_if_speed_is_present(void) {
     setupBench();
     telemetry.output_rpm = 800.0f;
     telemetry.test_mode_cmd = 1;
     tick(2);
-    TEST_ASSERT_FALSE_MESSAGE(telemetry.test_mode, "must refuse to arm while moving");
+    TEST_ASSERT_TRUE_MESSAGE(telemetry.test_mode, "test mode must arm for wiring checks even with speed");
 }
 
-// The guard that matters if the toggle is left on: real road speed ends bench mode,
-// and the bench-era gear label is not trusted for the next shift.
-void test_bench_mode_ends_the_moment_the_car_moves(void) {
+void test_bench_mode_stays_on_when_speed_appears(void) {
     setupBench();
     telemetry.test_mode_cmd = 1; tick(2);
-    telemetry.prnd_state = 'D';  tick(2);         // latch drive while still stopped
-    TEST_ASSERT_TRUE(telemetry.drive_engaged);
     TEST_ASSERT_TRUE(telemetry.test_mode);
-
-    telemetry.output_rpm = 800.0f;                // driven away with the toggle still on
+    telemetry.output_rpm = 800.0f;
     tick(2);
-    TEST_ASSERT_FALSE_MESSAGE(telemetry.test_mode, "real road speed must end bench mode");
+    TEST_ASSERT_TRUE_MESSAGE(telemetry.test_mode, "test mode stays until the operator turns it off");
+}
 
+void test_bench_mode_can_jog_a_shift_solenoid(void) {
+    setupBench();
+    telemetry.test_mode_cmd = 1; tick(2);
+    TEST_ASSERT_TRUE(telemetry.test_mode);
+    hwResetPins();
+    telemetry.test_sol_req = 1;               // Y3 latch on
+    telemetry.test_sol_req_v = 1;
+    tick(2);
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(KICK_DUTY, g_pwm[PIN_Y3],
+        "test mode must be able to kick a routing solenoid with no sensors");
+    tick(900);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(0, g_pwm[PIN_Y3],
+        "a latched output stays on until toggled off (circuit confirmation)");
+    telemetry.test_sol_req = 1;
+    telemetry.test_sol_req_v = -1;            // off
+    tick(2);
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, g_pwm[PIN_Y3], "toggling off must drop the coil");
+}
+
+void test_fill_exits_when_offgoing_clutch_moves(void) {
+    setupDriving(2, 500.0f);
+    engineProfile.raw()->cl_speed_transitions = 1;
     hwResetPins();
     telemetry.paddle_up_request = true;
-    tick(5);
-    TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, g_pwm[PIN_Y5],
-        "no shift may dispatch on a bench-era gear label — it must ratio-resync first");
+    uint32_t n = 0;
+    while (n < 80 && sched._current_phase != PHASE_FILL) { tick(1); n++; }
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(PHASE_FILL, sched._current_phase, "should be filling the 2-3");
+    TEST_ASSERT_LESS_THAN_UINT32_MESSAGE(80, n, "must reach FILL well before the fill timer");
+    // 2-3 off-going is K3. Drop N3 so vk3 = r3*(r2*out - n3)/(r2-r3) rises above MOVE.
+    float out = telemetry.output_rpm;
+    float r2 = ratioOf(2), r3 = ratioOf(3);
+    telemetry.n3_rpm = r2 * out - 80.0f * (r2 - r3) / r3;
+    telemetry.n2_rpm = telemetry.n3_rpm;
+    telemetry.speed_sample_seq++;
+    tick(20);   // 10 ms confirm + margin
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(PHASE_TORQUE, sched._current_phase,
+        "FILL must end when the off-going clutch starts to move, not only on the timer");
 }
+
+// Direct phase fixtures isolate feedback from the automatic shift policy.
+static void setupInertia() {
+    setupDriving(2, 500.0f);
+    TEST_ASSERT_TRUE(sched.beginShift(3, true, "TEST"));
+    sched._current_phase = PHASE_INERTIA;
+    sched._spc_cmd = 40;
+    sched._inertia_slope = 0;
+    sched._inertia_target_ms = 400;
+    sched._have_ratio_sample = true;
+    sched._last_ratio_sample_ms = millis();
+}
+
+void test_feedback_switch_off_has_no_hidden_clutch_trim() {
+    setupInertia();
+    engineProfile.raw()->cl_spc_enable = 0;
+    engineProfile.raw()->cl_speed_transitions = 1;
+    telemetry.on_clutch_rpm = 1000;
+    telemetry.live_ratio = ratioOf(2);
+    sched.runShiftPhases(200, true, true);
+    TEST_ASSERT_EQUAL_UINT8(40, telemetry.shift_pressure_pct);
+}
+
+void test_ratio_feedback_is_bounded_and_drops_out_when_stale() {
+    setupInertia();
+    engineProfile.raw()->cl_spc_enable = 1;
+    telemetry.live_ratio = ratioOf(2) + 1;
+    sched.runShiftPhases(200, true, true);
+    TEST_ASSERT_EQUAL_UINT8(65, telemetry.shift_pressure_pct);
+    g_now_ms += 101;
+    sched.runShiftPhases(301, true, false);
+    TEST_ASSERT_EQUAL_UINT8(40, telemetry.shift_pressure_pct);
+}
+
+void test_single_target_sample_and_undershoot_do_not_confirm() {
+    setupInertia();
+    telemetry.live_ratio = ratioOf(3);
+    sched.runShiftPhases(100, false, true);
+    g_now_ms += 70;
+    sched.runShiftPhases(170, false, false);
+    TEST_ASSERT_EQUAL_UINT8(2, telemetry.current_gear);
+    telemetry.live_ratio = ratioOf(3) - .3f;
+    sched.runShiftPhases(180, false, true);
+    TEST_ASSERT_EQUAL_UINT8(2, telemetry.current_gear);
+    TEST_ASSERT_FALSE(sched._target_ratio_tracking);
+}
+
+void test_rolling_sensor_loss_is_not_stationary_success() {
+    setupInertia();
+    telemetry.output_rpm = telemetry.turbine_rpm = 0;
+    sched.runShiftPhases(sched.phaseBackstopMs(), true, true);
+    TEST_ASSERT_EQUAL_UINT8(2, telemetry.current_gear);
+    TEST_ASSERT_TRUE(sched._gear_resync_pending);
+}
+
+void test_clutch_motion_observer_requires_explicit_enable() {
+    setupInertia();
+    engineProfile.raw()->cl_speed_transitions = 0;
+    TEST_ASSERT_FALSE(sched.clutchSpeedsLive());
+    engineProfile.raw()->cl_speed_transitions = 1;
+    TEST_ASSERT_TRUE(sched.clutchSpeedsLive());
+    telemetry.input_speed_trusted = false;
+    TEST_ASSERT_FALSE(sched.clutchSpeedsLive());
+}
+
+void test_individual_speed_loss_disables_feedback_and_tcc() {
+    setupInertia();
+    telemetry.output_signal_recent = false;
+    TEST_ASSERT_FALSE(sched.ratioFeedbackLive());
+    telemetry.output_signal_recent = true;
+    telemetry.n2_signal_recent = false;
+    TEST_ASSERT_FALSE(sched.ratioFeedbackLive());
+    telemetry.n2_signal_recent = true;
+    telemetry.engine_signal_recent = false;
+    sched._current_phase = PHASE_CRUISING;
+    sched._tcc_reopen_until_ms = 0;
+    telemetry.tcc_lockup_pct = 50;
+    sched.updateTCC(true);
+    TEST_ASSERT_LESS_THAN_UINT8(50, telemetry.tcc_lockup_pct);
+}
+
+void test_unobservable_completion_cannot_enable_learning() {
+    setupInertia();
+    telemetry.test_mode = true;
+    sched.finishShift();
+    TEST_ASSERT_FALSE(sched._last_adapt_valid);
+}
+
+// Fresh sensor acquisitions, independent of the browser / telemetry publication.
+static void atfTick(uint32_t ms, bool samples=true) {
+    for (uint32_t i=0;i<ms;++i) {
+        ++g_now_ms;
+        telemetry.atf_sample_ms=g_now_ms;
+        if (samples && g_now_ms%5==0) ++telemetry.speed_sample_seq;
+        sched.update(); sol.update();
+    }
+}
+static void atfDriving(uint8_t gear=2) {
+    telemetry={};
+    setupDriving(gear,500,'D');
+    telemetry.atf_only_selector=true;
+    telemetry.atf_sampled=true;
+    telemetry.atf_range_evidence=2;
+    if (gear==1 || gear==5) {
+        telemetry.n3_rpm=0; telemetry.n3_signal_recent=false;
+        telemetry.n2_rpm=telemetry.turbine_rpm/g_trans.blend_k;
+    }
+}
+void test_atf_requires_dwell_and_drops_early_paddles() {
+    atfDriving();
+    telemetry.paddle_up_request=true;
+    atfTick(290);
+    TEST_ASSERT_FALSE(telemetry.atf_forward_confirmed);
+    TEST_ASSERT_EQUAL(0,telemetry.current_gear);
+    atfTick(30);
+    TEST_ASSERT_TRUE(telemetry.atf_forward_confirmed);
+    TEST_ASSERT_EQUAL(2,telemetry.current_gear);
+    TEST_ASSERT_EQUAL(PHASE_CRUISING,sched._current_phase);
+    telemetry.paddle_up_request=true; atfTick(1);
+    TEST_ASSERT_EQUAL(3,telemetry.target_gear);
+    TEST_ASSERT_NOT_EQUAL(PHASE_CRUISING,sched._current_phase);
+}
+void test_atf_reverse_and_wrong_ratios_never_authorize() {
+    atfDriving(); telemetry.n2_rpm=0; telemetry.n2_signal_recent=false;
+    telemetry.turbine_rpm=0; atfTick(1000);
+    TEST_ASSERT_FALSE(telemetry.atf_forward_confirmed);
+    TEST_ASSERT_EQUAL(0,telemetry.tcc_lockup_pct);
+    atfDriving(); telemetry.turbine_rpm=telemetry.n2_rpm=telemetry.n3_rpm=850;
+    atfTick(1000); TEST_ASSERT_FALSE(telemetry.atf_forward_confirmed);
+}
+void test_atf_reidentifies_each_gear_without_assumed_second() {
+    for (uint8_t gear=1;gear<=5;++gear) {
+        atfDriving(gear); atfTick(320);
+        TEST_ASSERT_TRUE(telemetry.atf_forward_confirmed);
+        TEST_ASSERT_EQUAL(gear,telemetry.current_gear);
+    }
+}
+void test_atf_signal_loss_aborts_shift_and_requires_new_dwell() {
+    atfDriving(); atfTick(320);
+    telemetry.paddle_up_request=true; atfTick(1);
+    telemetry.atf_range_evidence=0; atfTick(1);
+    TEST_ASSERT_EQUAL(PHASE_CRUISING,sched._current_phase);
+    TEST_ASSERT_FALSE(telemetry.atf_forward_confirmed);
+    TEST_ASSERT_EQUAL(100,telemetry.shift_pressure_pct);
+    TEST_ASSERT_EQUAL(0,telemetry.tcc_lockup_pct);
+    telemetry.atf_range_evidence=2; atfTick(290);
+    TEST_ASSERT_FALSE(telemetry.atf_forward_confirmed);
+    atfTick(30); TEST_ASSERT_TRUE(telemetry.atf_forward_confirmed);
+}
+void test_atf_stale_speed_and_stop_revoke_authority() {
+    atfDriving(); atfTick(320); atfTick(30,false);
+    TEST_ASSERT_FALSE(telemetry.atf_forward_confirmed);
+    atfTick(320); TEST_ASSERT_TRUE(telemetry.atf_forward_confirmed);
+    telemetry.output_rpm=0; atfTick(1);
+    TEST_ASSERT_FALSE(telemetry.atf_forward_confirmed);
+    telemetry.paddle_down_request=true; atfTick(100);
+    TEST_ASSERT_EQUAL(PHASE_CRUISING,sched._current_phase);
+}
+void test_atf_opposing_paddles_cancel_and_tcc_remains_available() {
+    atfDriving(3); atfTick(320);
+    telemetry.paddle_up_request=telemetry.paddle_down_request=true; atfTick(1);
+    TEST_ASSERT_EQUAL(PHASE_CRUISING,sched._current_phase);
+    atfTick(500);
+    TEST_ASSERT_GREATER_THAN(0,telemetry.tcc_lockup_pct);
+}
+void test_atf_manual_mode_has_no_kickdown_or_auto_shifts() {
+    atfDriving(3); atfTick(320);
+    telemetry.tps_pct=95; telemetry.map_kpa=150;
+    atfTick(1000);
+    TEST_ASSERT_EQUAL(PHASE_CRUISING,sched._current_phase);
+    TEST_ASSERT_EQUAL(3,telemetry.current_gear);
+}
+
+void test_atf_source_switch_does_not_restore_stale_trrs_or_held_paddle() {
+    telemetry={}; hwResetPins();
+    InputManager inputs(PIN_ATF_TEMP,PIN_TPS,PIN_MAP);
+    inputs.begin();
+    g_input[PIN_SHIFT_A]=0; g_input[PIN_SHIFT_B]=0;
+    g_input[PIN_SHIFT_C]=1; g_input[PIN_SHIFT_D]=1; // D
+    g_adc_mv[PIN_ATF_TEMP]=1200;
+    for(int i=0;i<130;++i) { ++g_now_ms; inputs.update(); }
+    TEST_ASSERT_EQUAL('D',telemetry.prnd_state);
+    TEST_ASSERT_EQUAL(2,telemetry.atf_range_evidence);
+    telemetry.atf_only_selector=true; inputs.update();
+    telemetry.prnd_state='?';
+    for(int i=0;i<30;++i) { ++g_now_ms; inputs.update(); }
+    TEST_ASSERT_EQUAL('?',telemetry.prnd_state); // TRRS ignored
+    g_input[PIN_SHIFT_C]=g_input[PIN_SHIFT_D]=0; // invalid unplugged harness
+    g_input[PIN_PADDLE_UP]=1;
+    telemetry.atf_only_selector=false; inputs.update();
+    for(int i=0;i<30;++i) { ++g_now_ms; inputs.update(); }
+    TEST_ASSERT_EQUAL('?',telemetry.prnd_state);
+    TEST_ASSERT_FALSE(telemetry.paddle_up_request);
+    g_input[PIN_PADDLE_UP]=0;
+    g_input[PIN_SHIFT_B]=g_input[PIN_SHIFT_C]=1; // P
+    for(int i=0;i<30;++i) { ++g_now_ms; inputs.update(); }
+    TEST_ASSERT_EQUAL('P',telemetry.prnd_state);
+}
+
+void test_atf_shift_completes_without_losing_authority_or_learning() {
+    atfDriving(2); atfTick(320);
+    telemetry.paddle_up_request=true; atfTick(1);
+    uint32_t elapsed=0;
+    while (sched._current_phase!=PHASE_CRUISING && elapsed++<3000) {
+        if (sched._current_phase==PHASE_INERTIA) {
+            telemetry.turbine_rpm=telemetry.output_rpm*ratioOf(3);
+            telemetry.n2_rpm=telemetry.n3_rpm=telemetry.turbine_rpm;
+        }
+        atfTick(1);
+    }
+    TEST_ASSERT_LESS_THAN(3000,elapsed);
+    TEST_ASSERT_EQUAL(3,telemetry.current_gear);
+    TEST_ASSERT_TRUE(telemetry.atf_forward_confirmed);
+    TEST_ASSERT_FALSE(sched.currentMode().auto_shift);
+}
+void test_atf_cannot_resume_on_first_sample_after_scheduler_gap() {
+    atfDriving(); atfTick(320);
+    g_now_ms+=100; ++telemetry.speed_sample_seq; atfTick(1);
+    TEST_ASSERT_FALSE(telemetry.atf_forward_confirmed);
+    atfTick(290); TEST_ASSERT_FALSE(telemetry.atf_forward_confirmed);
+    atfTick(30); TEST_ASSERT_TRUE(telemetry.atf_forward_confirmed);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_routing_table_matches_722_6_hydraulics);
@@ -443,7 +702,26 @@ int main(int, char**) {
     RUN_TEST(test_shift_takes_y4_over_from_the_garage_pulse);
     RUN_TEST(test_moneyshift_guard_survives_dead_output_sensor);
     RUN_TEST(test_bench_mode_shifts_with_every_sensor_dead);
-    RUN_TEST(test_bench_mode_refuses_to_start_while_moving);
-    RUN_TEST(test_bench_mode_ends_the_moment_the_car_moves);
+    RUN_TEST(test_bench_mode_can_start_even_if_speed_is_present);
+    RUN_TEST(test_bench_mode_stays_on_when_speed_appears);
+    RUN_TEST(test_bench_mode_can_jog_a_shift_solenoid);
+    RUN_TEST(test_fill_exits_when_offgoing_clutch_moves);
+    RUN_TEST(test_feedback_switch_off_has_no_hidden_clutch_trim);
+    RUN_TEST(test_ratio_feedback_is_bounded_and_drops_out_when_stale);
+    RUN_TEST(test_single_target_sample_and_undershoot_do_not_confirm);
+    RUN_TEST(test_rolling_sensor_loss_is_not_stationary_success);
+    RUN_TEST(test_clutch_motion_observer_requires_explicit_enable);
+    RUN_TEST(test_individual_speed_loss_disables_feedback_and_tcc);
+    RUN_TEST(test_unobservable_completion_cannot_enable_learning);
+    RUN_TEST(test_atf_requires_dwell_and_drops_early_paddles);
+    RUN_TEST(test_atf_reverse_and_wrong_ratios_never_authorize);
+    RUN_TEST(test_atf_reidentifies_each_gear_without_assumed_second);
+    RUN_TEST(test_atf_signal_loss_aborts_shift_and_requires_new_dwell);
+    RUN_TEST(test_atf_stale_speed_and_stop_revoke_authority);
+    RUN_TEST(test_atf_opposing_paddles_cancel_and_tcc_remains_available);
+    RUN_TEST(test_atf_manual_mode_has_no_kickdown_or_auto_shifts);
+    RUN_TEST(test_atf_source_switch_does_not_restore_stale_trrs_or_held_paddle);
+    RUN_TEST(test_atf_shift_completes_without_losing_authority_or_learning);
+    RUN_TEST(test_atf_cannot_resume_on_first_sample_after_scheduler_gap);
     return UNITY_END();
 }

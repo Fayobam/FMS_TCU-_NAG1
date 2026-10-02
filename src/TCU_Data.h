@@ -147,6 +147,10 @@ const uint16_t RATIO_EVENT_CONFIRM_MS = 10;
 const uint16_t GEAR_UNVERIFIED_SETTLE_MS = 250;
 // Ratio must be within this of the target for a shift to count as completed.
 const float SHIFT_VERIFY_RATIO_TOL = 0.12f;
+// Feedback observation limits, independent of the wider gear-resync tolerance.
+const float SHIFT_SYNC_RATIO_TOL = 0.05f;
+const unsigned long RATIO_SAMPLE_MAX_AGE_MS = 100;
+const unsigned long UPSHIFT_SYNC_DWELL_MS = 60;
 // ...but ONLY where the ratio is real. Below this output speed calculateLiveRatio()
 // substitutes the BELIEVED gear's ratio (there is no measurable output), so live_ratio
 // cannot move and no shift could ever prove itself. That is absence of evidence, not
@@ -178,7 +182,7 @@ const uint16_t INERTIA_TARGET_MS[11] = { 450, 450, 440, 430, 400, 350, 320, 260,
 // Off-going clutch slip above MOVE = fill complete / element releasing; on-coming slip below
 // SYNC = synchronised. These read the clutch-speed model (telemetry.on/off_clutch_rpm), which is
 // far less noisy than gross turbine/output ratio. Bench-verify the values/signs before enabling.
-const float CLUTCH_MOVE_RPM = 50.0f;   // off-going slip that counts as "started to release"
+const float CLUTCH_MOVE_RPM = 25.0f;   // off-going slip that counts as "started to release" (UN52 ~20)
 const float CLUTCH_SYNC_RPM = 40.0f;   // on-coming slip that counts as "synchronised"
 
 // --- Input-shaft trust (rnd-ash clutch-speed video) ---
@@ -298,6 +302,10 @@ inline uint8_t driveModeIndex(char prnd) {
 // 4. TELEMETRY DATA STRUCTURE (V9.0)
 // ============================================================================
 struct TCU_Telemetry {
+    bool atf_only_selector = false;
+    uint8_t atf_range_evidence = 0; // Unknown / OpenCircuit / EngagedCircuit
+    uint32_t atf_sample_ms = 0;
+    bool atf_forward_confirmed = false;
     // --- Speeds & Ratios ---
     float turbine_rpm = 0.0f;
     float output_rpm  = 0.0f;
@@ -311,6 +319,12 @@ struct TCU_Telemetry {
     uint32_t speed_sample_seq = 0;   // ++ when a NEW edge advances a ratio channel (N2/N3/OUT);
                                      // lets the 1 kHz phase engine gate ratio-derivative checks (B-4)
     bool speed_hw_ok = true;         // MCPWM capture init OK (false = speed sensing disabled)
+    // Recent accepted pulse intervals, not electrical continuity diagnostics.
+    // N3 legitimately stops in some gears; false does not by itself mean fault.
+    bool n2_signal_recent = false;
+    bool n3_signal_recent = false;
+    bool output_signal_recent = false;
+    bool engine_signal_recent = false;
 
     // --- Engine Load ---
     float tps_pct = 0.0f;
@@ -349,15 +363,24 @@ struct TCU_Telemetry {
     volatile uint8_t safety_event_seq = 0;
     bool reverse_abuse_active = false;   // R selected while moving forward — pressure dumped
 
-    // --- BENCH TEST MODE (session-only, never persisted) ---
-    // Lets a TCU on a bench command real shifts with no gearbox, engine or road-speed
-    // sensors attached: the dashboard supplies the selector position and the paddles,
-    // and the automatic layers (schedule / launch / kickdown / lug) plus slip-limp are
-    // suspended so they cannot fight the operator with every sensor reading zero.
-    // Deliberately NOT persisted - a power cycle always returns to normal driving - and
-    // any real road speed ends it immediately (see ShiftScheduler::update).
+    // --- BENCH / CIRCUIT TEST MODE (session-only, never persisted) ---
+    // Dashboard owns selector + paddles; auto-shift / lug / slip-limp are suspended.
+    // Stays on until the operator turns it off (needed for wiring checks with a
+    // signal generator). A power cycle always returns to normal driving.
     bool   test_mode = false;
     int8_t test_mode_cmd = 0;      // Core 0 writes: +1 = enter, -1 = exit, 0 = idle
+    // Raw output latch. Core 0 writes a request; Core 1 applies. id 1=Y3 2=Y5 3=Y4
+    // 4=MPC 5=SPC 6=TCC 7=RP_LOCK 8=TORQUE_CUT. v>=0 = ON (pressure-% for PWM), v<0 = OFF.
+    uint8_t test_sol_req = 0;
+    int16_t test_sol_req_v = 0;
+    uint8_t test_out_mask = 0;     // latched outputs (bit0 Y3 … bit7 TQ) — echo to the dash
+    int8_t  adapt_nudge_cmd = 0;   // +1 firmer / -1 softer on the LAST completed shift (user-directed)
+
+    // Raw inputs for the circuit-check panel (always sampled, even in test mode).
+    float   tps_v = 0.0f;
+    float   map_v = 0.0f;
+    float   atf_v = 0.0f;
+    uint8_t io_din = 0;            // bit0..3 SHIFT_A..D, bit4 paddle-up, bit5 paddle-down
 
     // --- Selector sensing ---
     bool drive_engaged  = false;  // Scheduler latch: we have completed garage engagement
@@ -373,6 +396,10 @@ struct TCU_Telemetry {
 
     // --- Sensors ---
     float atf_temp_c = 40.0f;
+    bool atf_sampled = false;
+    bool atf_signal_valid = false;
+    bool atf_has_measurement = false;
+    uint32_t atf_last_valid_ms = 0;
 
     // --- Shift Diagnostics ---
     unsigned long last_shift_time_ms = 0;

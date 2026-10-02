@@ -107,6 +107,8 @@ void SpeedReader::begin() {
 
     telemetry.speed_hw_ok = _hw_ok;   // surface to DTC store / dashboard
     if (!_hw_ok) {
+        telemetry.n2_signal_recent = telemetry.n3_signal_recent = false;
+        telemetry.output_signal_recent = telemetry.engine_signal_recent = false;
         Serial.println("!!! SpeedReader: MCPWM capture init FAILED — speed sensing DISABLED. "
                        "Shifts run on time backstops; ratio/limp checks inert. Check pins/wiring.");
         return;
@@ -212,6 +214,12 @@ void SpeedReader::update() {
     telemetry.output_rpm  = readChannelRPM(_out);
     telemetry.engine_rpm  = readChannelRPM(_eng);
     telemetry.turbine_rpm = calculateTurbineRPM(n2, n3);
+    // readChannelRPM expires the interval history at the channel's timeout.
+    // Require a measured interval, not just the first edge after a long silence.
+    telemetry.n2_signal_recent = _n2.has_last && _n2.count > 0;
+    telemetry.n3_signal_recent = _n3.has_last && _n3.count > 0;
+    telemetry.output_signal_recent = _out.has_last && _out.count > 0;
+    telemetry.engine_signal_recent = _eng.has_last && _eng.count > 0;
 
     // Bump the sample sequence ONLY when a real new edge advanced a RATIO channel
     // (N2/N3/OUT — they drive live_ratio). Engine-only edges must NOT trip the phase

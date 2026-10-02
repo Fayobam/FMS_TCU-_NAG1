@@ -89,9 +89,8 @@ void EngineProfile::seedDefaults() {
     d.tc_stall_mult_x100  = 200;     // ~2.0× torque multiplication at stall (722.6 converter; tune)
     d.tc_coupling_sr_x100 = 85;      // multiplication → 1.0 by 0.85 speed ratio (coupling point)
 
-    // Physical pressure model (Phase 3) — OFF by default; heuristic % path stays in control
-    // until bench-validated. Coefficients = authentic UN52 PRM_DEFAULT_SETTINGS; friction +
-    // springs are physics-reasoned (NOT the OEM EGS blob), seeded per gearbox variant below.
+    // Physical mBar model stays OFF. We command open-loop pressure-% and close the loop
+    // on clutch slip (N2/N3) — no current sensing, no OEM current/pressure tables.
     d.cl_pressure_enable = 0;
     d.coef_stationary  = 100;        // UN52 PRM_DEFAULT_SETTINGS (authentic)
     d.coef_releasing   = 120;

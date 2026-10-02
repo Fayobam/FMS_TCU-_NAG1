@@ -1,13 +1,5 @@
-// ============================================================================
-// FILE: ShiftScheduler.h
-// VERSION: 6.0
-// UPDATES:
-//   - Added auto-safety layer (overrev upshift + lug downshift).
-//   - Added flare detection during upshift inertia phase.
-//   - Centralised shift initiation in beginShift() to remove duplicated,
-//     off-by-one trigger code.
-//   - Limp mode now has a deliberate reset path and load-aware threshold.
-// ============================================================================
+// One physics-task owner; implementation is split by concern across Shift*.cpp.
+// Read docs/CONTROL_ARCHITECTURE.md before changing a phase or output.
 #pragma once
 #include <Arduino.h>
 #include "TCU_Data.h"
@@ -86,6 +78,19 @@ class ShiftScheduler {
     uint16_t _bind_over_ms;            // consecutive ms the bind condition has held
     float    _cl_err = 0.0f;           // closed-loop SPC schedule error (INERTIA; 0 elsewhere)
     unsigned long _n2n3_fault_since_ms = 0; // when |N2−N3| first exceeded the trust band in 2/3/4 (BL-1)
+    uint16_t _clutch_move_over_ms = 0; // consecutive ms off-going clutch has been moving (FILL)
+    uint16_t _fill_move_ms = 0;        // time-in-FILL when off-going first moved (0 = timer-only)
+    unsigned long _last_ratio_sample_ms = 0;
+    bool _have_ratio_sample = false;
+    bool _shift_started_observable = false;
+    unsigned long _target_ratio_since_ms = 0;
+    bool _target_ratio_tracking = false;
+    bool ratioFeedbackLive() const;
+    bool targetRatioConfirmed(unsigned long dwell_ms, bool new_sample);
+    uint8_t  _test_out_mask = 0;       // latched raw outputs (see telemetry.test_out_mask)
+    uint8_t  _test_mpc_pct = 100, _test_spc_pct = 100, _test_tcc_pct = 0;
+    uint8_t  _last_sclass = 0, _last_shift_idx = 0, _last_tbin = 0;
+    bool     _last_adapt_valid = false;
 
     bool  _prev_pn_raw;             // edge-detect for the engagement (lever) window
     unsigned long _engage_grace_until_ms; // suppress slip-limp during D-engagement sync
@@ -99,7 +104,6 @@ class ShiftScheduler {
     float         _tps_hist[TPS_ROC_WINDOW_MS];
     uint8_t       _tps_hist_idx;         // points at the OLDEST sample
     bool          _tps_hist_primed;
-    bool          _high_torque_mode;
     unsigned long _ht_release_start_ms;  // 0 = not in cooldown
 
     // Engine rpm rate-of-change (rpm/s, EMA-smoothed) for predictive overrev
@@ -111,10 +115,19 @@ class ShiftScheduler {
     // TuneOverlay (tuneOverlay.lineMap(gear_idx, load_idx)). Its compile-time
     // defaults — and the dueATC provenance for them — are in TuneOverlay.cpp.
 
+    uint8_t _atfCandidate = 0;
+    uint32_t _atfCandidateSince = 0, _atfSpeedAt = 0, _atfSpeedSeq = 0;
+    bool _atfWasEnabled = false;
+    bool updateAtfSelector(); // false: owns outputs in unconfirmed hydraulic operation
     void calculateLinePressure();             // CRUISING line pressure (holding map + ATF)
     float cruiseLinePressure();               // the cruise MPC value, for max(cruise, …) during shifts
     void calculateLiveRatio();
     void computeClutchSpeeds();   // UN52 clutch-speed model: on/off-clutch slip from N2/N3/out
+    bool clutchSpeedsLive() const; // N2/N3/OUT trusted and rolling — safe to drive phases from clutch slip
+    void applyTestIo(uint8_t id, int16_t v);  // v<0 = off, else on (pct for PWM outs)
+    void releaseAllTestIo();
+    void applyHeldTestOutputs();
+    void consumeAdaptNudge();
     void updateTCC(bool ptick);
     void checkSafetyShifts();
     void checkAutoShift();                    // full auto up/down schedule (AUTO_SHIFT_MAP × road km/h)
@@ -131,10 +144,10 @@ class ShiftScheduler {
     void captureTrace();                      // high-rate datalog sample (bench tuning)
     void setSPC(float pct);                   // write _spc_cmd + command solenoid
     void applyShiftMPC();                     // MPC rule during a shift (per class/load)
-    void enterTestMode();                     // bench mode on (refused while moving)
-    void exitTestMode(const char* why);       // bench mode off + force a gear re-verify
+    void enterTestMode();                     // bench / circuit-test on (stays until turned off)
+    void exitTestMode(const char* why);       // off + force a gear re-verify
     uint16_t phaseBackstopMs() const;         // INERTIA/CATCH timeout, ATF-scaled
-    bool shiftProvedByRatio() const;          // did live_ratio actually demonstrate the target?
+    bool stationarySequenceAllowed() const;          // explicit bench / stationary timer completion
     void finishShift();                       // ratio proved the target: latch gear, adapt
     void abandonShift(const char* why);       // backstop hit unproven: keep label, force resync
     void evaluateAdaptation();                // class-indexed learning (Phase 5)

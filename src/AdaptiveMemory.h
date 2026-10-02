@@ -57,6 +57,9 @@ class AdaptiveMemory {
     // Apply one learning update for a completed shift. Deadband: clean shifts write
     // nothing. ATF gating is the caller's responsibility (it owns telemetry).
     void learn(uint8_t sclass, uint8_t shift_idx, uint8_t tbin, bool flare, bool harsh, bool bind);
+    // Clutch-speed fill-time: +cycles if the off-going moved LATE (under-fill), − if early.
+    void learnFill(uint8_t sclass, uint8_t shift_idx, uint8_t tbin, int fill_err_cycles);
+    // OF Gear-style user nudge on a cell: dir>0 firmer (more fill/apply), dir<0 softer.
 
     // Persistence (Core 0 only): flush dirty classes on the 60s timer or when forced.
     void processFlush();
@@ -66,4 +69,5 @@ class AdaptiveMemory {
     AdaptCell* cellsPtr() { return &_cells[0][0][0]; }
     int cellCount() { return ADAPT_CLASSES * ADAPT_SHIFTS * ADAPT_TBINS; }
     void markAllDirtyAndFlush();
+    void nudge(uint8_t sclass, uint8_t shift_idx, uint8_t tbin, int dir);
 };

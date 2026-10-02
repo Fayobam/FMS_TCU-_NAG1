@@ -83,6 +83,31 @@ void AdaptiveMemory::learn(uint8_t sclass, uint8_t shift_idx, uint8_t tbin,
     }
 }
 
+void AdaptiveMemory::learnFill(uint8_t sclass, uint8_t shift_idx, uint8_t tbin, int fill_err_cycles) {
+    if (sclass >= ADAPT_CLASSES || shift_idx >= ADAPT_SHIFTS || tbin >= ADAPT_TBINS) return;
+    if (fill_err_cycles == 0) return;
+    AdaptCell &cell = _cells[sclass][shift_idx][tbin];
+    int step = (fill_err_cycles > 0) ? 1 : -1;
+    int8_t next = clampFillT(cell.fill_t_cycles + step);
+    if (next == cell.fill_t_cycles) return;
+    cell.fill_t_cycles = next;
+    portENTER_CRITICAL(&_dirtyMux);
+    _dirty = (uint8_t)(_dirty | (1u << sclass));
+    portEXIT_CRITICAL(&_dirtyMux);
+}
+
+void AdaptiveMemory::nudge(uint8_t sclass, uint8_t shift_idx, uint8_t tbin, int dir) {
+    if (sclass >= ADAPT_CLASSES || shift_idx >= ADAPT_SHIFTS || tbin >= ADAPT_TBINS) return;
+    if (dir == 0) return;
+    AdaptCell &cell = _cells[sclass][shift_idx][tbin];
+    int s = (dir > 0) ? 1 : -1;
+    cell.fill_p_trim = clampFillP(cell.fill_p_trim + 2 * s);
+    cell.apply_trim  = clampApply(cell.apply_trim  + 2 * s);
+    portENTER_CRITICAL(&_dirtyMux);
+    _dirty = (uint8_t)(_dirty | (1u << sclass));
+    portEXIT_CRITICAL(&_dirtyMux);
+}
+
 // Core 0 only (NVS can block 1-10ms). Flush dirty classes on the 60s timer or when
 // forced (P/N entry). One class write per call to bound latency.
 void AdaptiveMemory::processFlush() {

@@ -54,6 +54,8 @@ inline void portEXIT_CRITICAL(portMUX_TYPE*) {}
 
 #define HW_MAX_PIN 64
 inline uint16_t g_pwm[HW_MAX_PIN];   // last ledcWrite duty per pin
+inline uint16_t g_adc_mv[HW_MAX_PIN];
+inline uint8_t g_input[HW_MAX_PIN];
 inline uint8_t  g_dio[HW_MAX_PIN];   // last digitalWrite level per pin
 
 inline void hwResetPins() {
@@ -62,7 +64,8 @@ inline void hwResetPins() {
 
 inline void pinMode(uint8_t, uint8_t) {}
 inline void digitalWrite(uint8_t pin, uint8_t v) { if (pin < HW_MAX_PIN) g_dio[pin] = v; }
-inline int  digitalRead(uint8_t) { return 0; }
+inline int digitalRead(uint8_t pin) { return g_input[pin]; }
+inline uint32_t analogReadMilliVolts(uint8_t pin) { return g_adc_mv[pin]; }
 inline int  analogRead(uint8_t) { return 0; }
 inline bool ledcAttach(uint8_t, uint32_t, uint8_t) { return true; }
 inline bool ledcWrite(uint8_t pin, uint32_t duty) {

@@ -1,10 +1,5 @@
-// ============================================================================
-// FILE: main.cpp
-// VERSION: 9.0
-// UPDATES: SpeedReader is now period-based (MCPWM capture) and self-gates to
-//          200Hz — called every loop, no more 50ms counting window. InputManager
-//          owns all its sampling internally (staggered ADC round-robin).
-// ============================================================================
+// Startup and task ownership. Control starts before networking.
+// See docs/CONTROL_ARCHITECTURE.md for the firmware reading order.
 #include <Arduino.h>
 #include "esp_task_wdt.h"
 
@@ -18,6 +13,8 @@
 #include "WebManager.h"
 #include "DtcManager.h"
 #include "TuneOverlay.h"
+#include "ControlBridge.h"
+#include <Preferences.h>
 
 // ============================================================================
 // 1. GLOBAL OBJECTS
@@ -44,10 +41,16 @@ void core0DashboardTask(void *pvParameters);
 // ============================================================================
 void setup() {
     Serial.begin(115200);
-    Serial.println("Booting FMS 722.6 TCU V9 (W5A330 / M111.985 + TVS1320)...");
+    Serial.println("Booting FMS 722.6 TCU...");
 
     engineProfile.begin();   // before inputs (TPS/MAP cal) and scheduler (torque model)
     tuneOverlay.begin();     // before the scheduler: it reads line/apply/inertia/backstop
+    Preferences selectorPrefs;
+    if (selectorPrefs.begin("tcu_selector", false)) {
+        if (selectorPrefs.isKey("atf_only"))
+            telemetry.atf_only_selector = selectorPrefs.getBool("atf_only", false);
+        selectorPrefs.end();
+    }
     solenoids.begin();
     speedReader.begin();
     inputManager.begin();
@@ -56,10 +59,11 @@ void setup() {
     shiftScheduler.begin();
 
     webManager.setAdaptiveMemory(&adaptives);
-    webManager.begin();
-
-    xTaskCreatePinnedToCore(core1PhysicsTask, "PhysicsTask", 8192, NULL, 5, NULL, 1);
-    xTaskCreatePinnedToCore(core0DashboardTask, "DashboardTask", 8192, NULL, 1, NULL, 0);
+    if (xTaskCreatePinnedToCore(core1PhysicsTask, "PhysicsTask", 8192, NULL, 5, NULL, 1) != pdPASS) {
+        Serial.println("Control task allocation failed; outputs retain their safe boot state.");
+        return; // Never allocate networking ahead of a failed control task.
+    }
+    xTaskCreatePinnedToCore(core0DashboardTask, "DashboardTask", 16384, NULL, 1, NULL, 0);
 }
 
 void loop() {
@@ -97,13 +101,15 @@ void core1PhysicsTask(void *pvParameters) {
         esp_task_wdt_reset();
         uint32_t t0 = micros();
 
+        controlBridge.consume(adaptives); // bounded typed commands; no network or NVS work
         inputManager.update();     // PRND + paddles + one ADC channel (round-robin)
-        speedReader.update();      // period-capture readout, self-gated to 200Hz
+        speedReader.update();      // period-capture readout, recomputed every control tick
 
         shiftScheduler.update();   // owns standby/garage Y4 windowing now (ATSG-correct)
 
         solenoids.update();
         dtcManager.poll();         // edge the fault flags into the DTC store
+        controlBridge.publish(adaptives); // coherent read-only snapshot at 10 Hz
 
         // Loop-overrun watchdog: the 1 kHz budget is 1000us. If the work block runs
         // long it silently stretches every shift phase's wall-clock — log it (rate-limited).
@@ -116,11 +122,12 @@ void core1PhysicsTask(void *pvParameters) {
 }
 
 // ============================================================================
-// 5. DASHBOARD LOOP (Core 0) - 100Hz
+// 5. DASHBOARD LOOP (Core 0) - 200Hz service, rate-limited telemetry
 // ============================================================================
 void core0DashboardTask(void *pvParameters) {
+    webManager.begin(); // Control is already running before any Wi-Fi/filesystem work.
     while (true) {
-        webManager.broadcastTelemetry();   // self-gated to ~60Hz internally
+        webManager.update();               // Core 0: DNS, cmd queue, WS telemetry, NVS
         dtcManager.processFlush();          // persist DTC counts to NVS (throttled)
         vTaskDelay(pdMS_TO_TICKS(5));       // 200Hz service loop; broadcast gate sets the real rate
     }

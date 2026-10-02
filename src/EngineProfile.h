@@ -57,7 +57,7 @@ struct EngineProfileData {
     uint16_t apply_spring_mbar[4];              // oncoming return-spring preload (mBar)
     uint16_t release_spring_mbar[4];            // off-going return-spring preload (mBar)
     uint16_t p_full_scale_mbar;                 // line pressure at 100% command (mBar→% solenoid map)
-    uint8_t  cl_speed_transitions;              // 0 = ratio-based phase exits (default), 1 = clutch-speed (Phase 1b)
+    uint8_t  cl_speed_transitions;              // opt-in clutch-motion fill/flare observer; ratio still proves completion
     float    kmh_per_outrpm;                    // road km/h per output-shaft rpm (final drive × tyre); auto-mode speed
     uint32_t magic;                             // sanity/version tag
 };

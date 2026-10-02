@@ -15,6 +15,7 @@
 #pragma once
 #include <Arduino.h>
 #include "TCU_Data.h"
+#include "AtfRangeObserver.h"
 
 // --- HARDWARE CALIBRATION ---
 #define TEMP_PULLUP_RESISTOR_OHMS 2000.0f   // matches board R9 (2K pull-up to +3.3V)
@@ -54,6 +55,8 @@ class InputManager {
     unsigned long _last_paddle_up_time;
     unsigned long _last_paddle_down_time;
 
+    AtfRangeObserver _atfRange;
+    bool _lastAtfOnly = false;
     uint8_t _adc_phase;   // round-robin: 0=TPS, 1=MAP, 2=temp
 
     float calculateTemperatureFromResistance(float resistance_ohms);
