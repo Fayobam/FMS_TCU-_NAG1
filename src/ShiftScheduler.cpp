@@ -203,6 +203,24 @@ void ShiftScheduler::updateTCC(bool ptick) {
     _solenoids->setTCC((uint8_t)constrain(current_tcc_pwm, 0, 100));
 }
 
+// Predict the post-downshift turbine speed TWO independent ways and return the
+// HIGHER (fail-safe): from the output sensor (output × target ratio) AND from the
+// turbine sensor, which is output-INDEPENDENT (turbine × ratio_target/ratio_current,
+// since turbine = output × ratio_current). So a DEAD output sensor reading 0 cannot
+// silently defeat the guard — the N2/N3-derived estimate still catches an over-rev
+// downshift. (Both sensors dead = truly blind; nothing can help then.)
+//
+// beginShift() remains the authority that refuses the shift. This is exposed so the
+// automatic layers can decline to REQUEST a downshift they can already see will be
+// refused, rather than re-asking every tick. One implementation, two callers.
+float ShiftScheduler::predictedDownshiftRpm(uint8_t target_gear) {
+    float ratio_t = getTargetRatio(target_gear);
+    float ratio_c = getTargetRatio(telemetry.current_gear);
+    float pred_out  = telemetry.output_rpm * ratio_t;
+    float pred_turb = (ratio_c > 0.01f) ? telemetry.turbine_rpm * (ratio_t / ratio_c) : 0.0f;
+    return fmaxf(pred_out, pred_turb);
+}
+
 // ----------------------------------------------------------------------------
 // CENTRALISED SHIFT INITIATION  (one code path for paddle AND safety shifts)
 // ----------------------------------------------------------------------------
@@ -225,21 +243,18 @@ bool ShiftScheduler::beginShift(uint8_t target_gear, bool is_upshift, const char
     if (routing_pin == 0) return false;
 
     // Money-shift / overrev guard on ANY downshift (manual or auto).
-    // Predict the post-downshift turbine speed TWO independent ways and trust the
-    // HIGHER (fail-safe): from the output sensor (output × target ratio) AND from the
-    // turbine sensor, which is output-INDEPENDENT (turbine × ratio_target/ratio_current,
-    // since turbine = output × ratio_current). So a DEAD output sensor reading 0 can no
-    // longer silently defeat the guard — the N2/N3-derived estimate still catches an
-    // over-rev downshift. (Both sensors dead = truly blind; nothing can help then.)
     if (!is_upshift) {
-        float ratio_t = getTargetRatio(target_gear);
-        float ratio_c = getTargetRatio(telemetry.current_gear);
-        float pred_out  = telemetry.output_rpm * ratio_t;
-        float pred_turb = (ratio_c > 0.01f) ? telemetry.turbine_rpm * (ratio_t / ratio_c) : 0.0f;
-        float predicted = fmaxf(pred_out, pred_turb);
+        float predicted = predictedDownshiftRpm(target_gear);
         if (predicted > RPM_MAX_SAFE_DOWNSHIFT) {
-            Serial.print("DOWNSHIFT BLOCKED ("); Serial.print(source);
-            Serial.print(") predicted RPM "); Serial.println(predicted);
+            // Rate-limited. The automatic layers pre-screen with
+            // predictedDownshiftRpm() so they never arrive here in a loop, but a held
+            // paddle or a future caller must not be able to pace this 1 kHz task at
+            // the UART's rate: Serial.print blocks once the 256-byte TX ring fills.
+            if (millis() - _last_block_log_ms > 1000) {
+                _last_block_log_ms = millis();
+                Serial.print("DOWNSHIFT BLOCKED ("); Serial.print(source);
+                Serial.print(") predicted RPM "); Serial.println(predicted);
+            }
             return false;
         }
     }
@@ -405,7 +420,17 @@ void ShiftScheduler::checkKickdown() {
 
     uint8_t g = telemetry.current_gear;
     if (g <= 1) return;
-    // beginShift applies the same two-source overspeed guard to every request.
+    // Do not REQUEST a downshift the money-shift guard will refuse. The kickdown
+    // gate is throttle-and-engine-rpm (TPS > 70 %, engine <= 5200), but the guard is
+    // on PREDICTED turbine in the lower gear, and the two do not coincide: at WOT in
+    // 4th above ~4040 output-equivalent rpm, 3rd would spin the turbine past 6000. A
+    // refusal does not arm last_auto_shift_ms (only a successful shift does), so
+    // without this pre-screen the request repeated every tick for as long as the
+    // throttle stayed down. Checking here rather than arming the shared cooldown on
+    // refusal keeps OVERREV protection immediate — that cooldown gates it too.
+    if (predictedDownshiftRpm(g - 1) > RPM_MAX_SAFE_DOWNSHIFT) return;
+    // beginShift still applies the same guard to every request; this only avoids
+    // asking. It remains the sole authority on whether a shift may start.
     if (beginShift(g - 1, false, "KICKDOWN")) {
         telemetry.last_auto_shift_ms = millis();
     }

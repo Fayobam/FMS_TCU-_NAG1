@@ -69,6 +69,7 @@ class ShiftScheduler {
     float    _prev_ratio;              // ratio at the PREVIOUS speed sample (sprag dRatio/dt)
     bool     _ratio_flat = false;      // |Δratio| over the last sample < flat band (held between samples)
     uint32_t _last_speed_seq = 0;      // last speed_sample_seq the engine acted on (B-4)
+    uint32_t _last_block_log_ms = 0;   // rate limit for the blocked-downshift log (1/s)
     unsigned long _sync_stable_since_ms; // when ratio first parked at target (sprag/timed catch)
     float    _output_rpm_at_catch_start; // coast-down decel-delta metric baseline
     unsigned long _catch_start_ms;
@@ -139,6 +140,7 @@ class ShiftScheduler {
     bool isForwardRange();                    // prnd is one of D/4/3/2/1
     void updateStandbyAndGarage();            // SPC/MPC standby duties + Y4 garage window (not shifting)
     bool beginShift(uint8_t target_gear, bool is_upshift, const char* source);
+    float predictedDownshiftRpm(uint8_t target_gear);  // money-shift guard prediction (shared)
     void classifyAndProfile(uint8_t from, uint8_t to, bool is_upshift);  // class + profile scalars
     void runShiftPhases(unsigned long t_ms, bool ptick, bool new_sample);  // the class-aware phase engine
     void captureTrace();                      // high-rate datalog sample (bench tuning)

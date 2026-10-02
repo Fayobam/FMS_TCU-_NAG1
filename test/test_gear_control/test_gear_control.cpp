@@ -356,6 +356,40 @@ void test_moneyshift_guard_survives_dead_output_sensor(void) {
         "blocked downshift must not start a shift");
 }
 
+// A refused kickdown must stay cheap AND must not consume the shared cooldown.
+//
+// The kickdown gate is throttle + engine rpm (TPS > 70 %, engine <= 5200); the
+// money-shift guard is on PREDICTED turbine in the LOWER gear. The two do not
+// coincide, so there is a real band where kickdown is evaluated every tick and
+// refused every time. In SPORT AUTO (1.20x shift points) 3rd gear at WOT is
+// refused from ~95 km/h but does not upshift to 4th until ~121 km/h, so nothing
+// relieves it for 26 km/h of wide-open throttle.
+//
+// The tempting fix — arm last_auto_shift_ms on refusal — would be a safety
+// regression: checkSafetyShifts() gates OVERREV on that same cooldown, so a
+// refused kickdown would delay engine-overrev protection by up to 500 ms, exactly
+// when the throttle is wide open. The pre-screen in checkKickdown() must therefore
+// leave the cooldown untouched.
+void test_refused_kickdown_never_delays_overrev_protection(void) {
+    setupDriving(3, 2600.0f, '3');       // SPORT AUTO @ ~99 km/h: kickdown is live
+    telemetry.tps_pct     = 95.0f;       // WOT -> kickdown evaluated every tick
+    telemetry.engine_rpm  = 3864.0f;     // below KICKDOWN_MAX_ENG_RPM (5200)
+    hwResetPins();
+    tick(50);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, telemetry.current_gear,
+        "2nd would spin the turbine to ~6261 rpm: the kickdown must be refused");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(PHASE_CRUISING, sched._current_phase,
+        "a refused kickdown must not start a shift");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, telemetry.last_auto_shift_ms,
+        "a refused kickdown must not arm the cooldown that also gates OVERREV");
+
+    // Overrev now, with the refusal still fresh. It must fire on the next tick.
+    telemetry.engine_rpm = 6500.0f;      // past overrev_rpm (6300)
+    tick(2);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(4, telemetry.target_gear,
+        "overrev upshift must be immediate; a refused kickdown must not gate it");
+}
+
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -701,6 +735,7 @@ int main(int, char**) {
     RUN_TEST(test_boot_leaves_y3_off);
     RUN_TEST(test_shift_takes_y4_over_from_the_garage_pulse);
     RUN_TEST(test_moneyshift_guard_survives_dead_output_sensor);
+    RUN_TEST(test_refused_kickdown_never_delays_overrev_protection);
     RUN_TEST(test_bench_mode_shifts_with_every_sensor_dead);
     RUN_TEST(test_bench_mode_can_start_even_if_speed_is_present);
     RUN_TEST(test_bench_mode_stays_on_when_speed_appears);
