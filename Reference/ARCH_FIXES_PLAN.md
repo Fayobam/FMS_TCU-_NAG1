@@ -113,7 +113,17 @@ Small change; the point is bounded clutch-energy, not blocking the shift.
 **Accept:** builds; OVERREV-sourced shifts get the firm profile; normal shifts unchanged.
 
 ### F6 — Speed-sensor plausibility + fail-closed guards  [R3]
-**Status:** TODO — needs a short design pass before coding
+**Status:** LANDED DIFFERENTLY (2026-09-14, commit `ae98f5c`) — re-verify against
+this sketch before closing. Implemented as per-channel `*_signal_recent` flags
+(`n2Recent`/`n3Recent`/`outRecent`/`engRecent`, surfaced individually on the
+dashboard) rather than the `out_speed_trusted`/`eng_speed_trusted` pair sketched
+below. The money-shift guard predicts two independent ways and trusts the higher,
+so a dead output sensor cannot defeat it (`test_moneyshift_guard_survives_dead_output_sensor`,
+`test_individual_speed_loss_disables_feedback_and_tcc`,
+`test_rolling_sensor_loss_is_not_stationary_success`). **Deliberately NOT claimed:**
+a recent pulse is evidence, not continuity — a stopped shaft and a cut wire still
+look identical, and N3 legitimately stops in some gears. The lug-guard trust gate
+and the ENG-implausible rule below are still unimplemented.
 **Design sketch:**
 - New telemetry flags `out_speed_trusted`, `eng_speed_trusted` + DTCs.
 - OUT implausible: turbine > ~1500 rpm sustained (X00 ms) while output < 50 in
@@ -131,7 +141,14 @@ Small change; the point is bounded clutch-energy, not blocking the shift.
 instead of silently disabling limp; stopped-car launch shift still works.
 
 ### F7 — Double-buffered web writes to live calibration  [R4]
-**Status:** TODO — needs a short design pass before coding
+**Status:** DONE (2026-09-14, commit `ae98f5c`) — superseded by a stronger design.
+Not double-buffering: `ControlBridge` is a single-slot typed command with an atomic
+handoff, and a configuration write is only *accepted* when the car is stopped in
+P/N with no shift in progress. An in-flight shift therefore cannot see a value
+change underneath it, because no write is applied while one is running. NVS
+serialization happens on core 0 after the control core has acknowledged, and
+read-back is verified (`storedCalibrationMatches`). The variant switch takes the
+same stopped-P/N path, as the sketch suggested it might.
 **Design sketch:**
 - `set_profile` writes into a staging `EngineProfileData` + sets an atomic
   `profile_pending` flag; Core 1 applies staging→active at a safe point
@@ -147,7 +164,11 @@ instead of silently disabling limp; stopped-car launch shift still works.
 in-flight shift reads; variant switch refused unless stopped in P/N.
 
 ### F8 — Limp trust-flag recovery + arming windows  [R7]
-**Status:** TODO
+**Status:** PARTIALLY DONE (`ae98f5c`). The ATF-only selector path re-establishes
+`input_speed_trusted` when it re-identifies a forward gear from ratio + N3
+signature, which gives the trust flag a recovery route it did not have. The
+sketched TCC-locked-5th cross-check and the DTC edge verification are still TODO,
+and the tps<80 / map<130 gates are still undocumented.
 **Design:** (a) `input_speed_trusted` recovery: also re-evaluate in 5th when
 TCC is locked (engine≈turbine cross-check gives an independent trust signal);
 (b) DTC the trust-flag trip (already exists: DTC_SPEED_N2N3_MISMATCH — verify
@@ -158,7 +179,22 @@ map<130 gates — they're deliberate (boost launches slip the converter).
 TCC-locked 5th cruise instead of persisting forever.
 
 ### F9 — Comms hygiene batch  [R10 + honorable mentions]
-**Status:** TODO
+**Status:** PARTIALLY DONE — remaining items listed below.
+- DONE (`ae98f5c`): `SPIFFS.begin(false)` — never format assets as a boot side
+  effect. Bounded 3072-byte telemetry buffer with oversize packets counted, not
+  truncated (`TelemetryConfig.h`); the trace serialize checks its allocation and
+  skips the send on failure.
+- DONE (`def1ee4`): the "DOWNSHIFT BLOCKED" spam. Root cause was NOT just the log
+  volume — `checkKickdown()` re-issued the refused request every tick because only
+  a successful shift arms `last_auto_shift_ms`, and its throttle/rpm gate does not
+  coincide with the guard's predicted-turbine test. Fixed by pre-screening with the
+  shared `predictedDownshiftRpm()`, plus a 1/s limit on the log itself. Arming the
+  cooldown on refusal was rejected: it also gates OVERREV.
+- TODO: soft-overrun counter (1001-1500 us ticks into a separate telemetry counter
+  alongside the existing 1500 us DTC trip in `main.cpp`).
+- TODO: wrap `DtcManager::clearAll()` / `processFlush()` in a portMUX.
+- TODO: delete dead `checkCoastDownSchedule()` (confirm with user first).
+- TODO: fix the `computeLoad()` comment (`TCU_Data.h`).
 **Design (batch of small independent edits, one commit):**
 - `SPIFFS.begin(false)` + on failure retry once, then serve the stub and set a
   telemetry flag — never auto-format the dashboard assets.
@@ -279,9 +315,47 @@ ratio), so the bug was invisible until the tests asserted at shift completion
 instead of after a fixed 2 s. A test that passes because a safety net caught the
 fault is not a passing test.
 
+---
+
+## September 2026 reliability review  [commits `ae98f5c`, `770372d`, `def1ee4`]
+
+A separate body of work from the F-queue, reviewed and written up in `docs/` rather
+than here, which is why this file fell out of date. Recorded so a fresh session does
+not redo it:
+
+- **Control split.** One `ShiftScheduler` object across six files by concern
+  (dispatch / phases / calibration / safety / bench / ATF selector). No new tasks,
+  queues, inheritance or state owners. Symbol inventory vs. the pre-split commit
+  shows nothing dropped except `shiftProvedByRatio`, whose F12a property is now
+  carried by `targetRatioConfirmed` + `stationarySequenceAllowed` and still locked
+  by `test_standstill_downshift_still_latches`.
+- **Web split.** `ControlBridge` (the only control-task entry point), `TelemetryJson`,
+  `NetworkManager`, `CommandValidation`. Fixed a real heap bug: ArduinoJson 7.4.3's
+  literal adapter was borrowing storage from snapshot buffers that had already been
+  destroyed, producing invalid UTF-8 in `limpReason` and WebSocket reconnect churn.
+- **AsyncTCP watchdog.** Its 1000 ms idle feed interval cannot coexist with the
+  250 ms F4 physics watchdog — the chip was resetting ~1 s after boot.
+  `CONFIG_ASYNC_TCP_USE_WDT=0` excludes networking without weakening F4.
+- **Flash headroom resolved.** Single-app partition table reclaims the unused OTA
+  slot: 86.3 % of 1.25 MB -> 59.9 % of 2 MB. The "consider a custom partition table
+  before any feature that adds libraries" warning below is retired.
+- **ATF-only selector** for a car with no TRRS harness. Observes open/engaged ATF
+  circuit + identifies a forward gear from ratio and N3 signature. Never asserts
+  Reverse or P/N; with no confirmed gear it de-energizes routing and pressure rather
+  than assuming second. See `docs/ATF_ONLY_SELECTOR.md` for what it cannot know.
+- **Test harness grew** to four suites via `tools/test_host.py` (36 control cases,
+  web contract, network state machine, ATF range) plus `tools/test_browser.py`.
+
+**Owed on hardware:** no successful upload has happened since any of this
+(esptool reported boot mode 0x12, not download mode), so the serialization fix, the
+AsyncTCP watchdog fix and the F4 bench stall test are all still unconfirmed on
+device. Host and target-build checks only.
+
 ## Done
 
 - F1, F2, F3, F4 (2026-07-01) — see entries above.
+- September review: control/web/asset split, ATF-only selector (2026-09-14).
+- F7 (as ControlBridge), F9 blocked-downshift item (2026-10-02).
 - F12, F13, F14 + native test harness (2026-08-11).
 
 ## Discovered during work
