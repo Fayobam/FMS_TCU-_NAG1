@@ -40,7 +40,7 @@
         <div class="connection">
           <span id="connection-dot" class="status-dot off"></span>
           <span id="connection-label">Connecting</span>
-          <span class="sample-rate">10 Hz</span>
+          <span class="sample-rate">—</span>
         </div>
       </header>
       <div id="offline" class="notice warning" role="status">
@@ -87,29 +87,29 @@
             </div>
             <div class="rpm-primary">
               <div>
-                <span data-field="engRpm">—</span>
-                <small>ENGINE</small>
+                <span data-field="turbRpm">—</span>
+                <small>TURBINE</small>
+              </div>
+              <div>
+                <span data-field="outRpm">—</span>
+                <small>OUTPUT</small>
+              </div>
+            </div>
+            <div class="metrics three">
+              <div>
+                <label>Live ratio</label>
+                <b data-field="ratio" data-digits="3">—</b>
+              </div>
+              <div>
+                <label>Engine</label>
+                <b data-field="engRpm">—</b>
                 <div class="rpm-rail">
                   <i id="rpm-bar"></i>
                 </div>
               </div>
               <div>
-                <span data-field="turbRpm">—</span>
-                <small>TURBINE</small>
-              </div>
-            </div>
-            <div class="metrics three">
-              <div>
-                <label>Output</label>
-                <b data-field="outRpm">—</b>
-              </div>
-              <div>
                 <label>Road speed <small>km/h</small></label>
                 <b data-field="kmh" data-digits="1">—</b>
-              </div>
-              <div>
-                <label>Live ratio</label>
-                <b data-field="ratio" data-digits="3">—</b>
               </div>
             </div>
           </article>
@@ -139,7 +139,7 @@
           <article class="panel chart-panel">
             <div class="panel-top">
               <h2>Speed history</h2>
-              <span class="eyebrow">30 SECOND WINDOW</span>
+              <span class="eyebrow" id="chart-window">ROLLING WINDOW</span>
             </div>
             <div class="chart-legend">
               <span class="legend engine">Engine</span>
@@ -150,7 +150,7 @@
             </canvas>
             <div class="chart-foot">
               <span>RPM</span>
-              <span>−30 s<span>NOW</span></span>
+              <span><span id="chart-span">−</span><span>NOW</span></span>
             </div>
           </article>
           <article class="panel pressure-panel">
@@ -200,14 +200,14 @@
           </div>
           <div id="shift-metrics" class="metrics four">
           </div>
-          <p class="footnote">Elapsed time is browser-observed at 10 Hz. Completed captures retain the firmware's 2 ms samples, up to 400 samples per shift.</p>
+          <p class="footnote">Elapsed time is browser-observed at the telemetry rate. Completed captures retain the firmware's 2 ms samples, up to 400 samples per shift.</p>
         </article>
         <article class="panel spaced">
           <div class="panel-top">
             <h2>Telemetry recorder</h2>
             <div class="toolbar">
               <select id="chart-signal" aria-label="Chart channels"><option value="speed">Shaft speeds · rpm</option><option value="pressure">MPC / SPC / TCC · %</option><option value="slip">Clutch / TCC slip · rpm</option><option value="conditions">TPS / ATF · % / °C</option></select>
-              <select id="chart-source" aria-label="Chart source"><option value="live">Live · 30 s</option><option value="trace">Last shift capture</option></select>
+              <select id="chart-source" aria-label="Chart source"><option value="live" id="chart-live-opt">Live</option><option value="trace">Last shift capture</option></select>
               <button id="export-trace" disabled>Export shift CSV ↗</button>
             </div>
           </div>

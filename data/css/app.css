@@ -487,6 +487,12 @@ main {
   margin: 10px 0 0
 }
 
+/* The full-width rail used to separate the big pair from the detail row; it now
+   lives inside the Engine cell, so the gap has to be stated. */
+.rpm-primary+.metrics {
+  margin-top: 22px
+}
+
 .rpm-rail i {
   display: block;
   height: 100%;

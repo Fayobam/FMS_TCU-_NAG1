@@ -35,4 +35,4 @@ telemetry.update(n2Recent=True,n3Recent=True,outRecent=True,engRecent=True,atfSo
 
 # Control-loop health and throttle rate. loopMaxUs is the number to read after a
 # drive: the 1 kHz budget is 1000 us, and a healthy loop stays near it.
-telemetry.update(tpsRocPctMs=0.0,loopMaxUs=1180,loopOverrunSoft=3,loopOverrunHard=0)
+telemetry.update(intervalMs=50,tpsRocPctMs=0.0,loopMaxUs=1180,loopOverrunSoft=3,loopOverrunHard=0)

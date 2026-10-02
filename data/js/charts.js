@@ -1,6 +1,11 @@
 'use strict';
 (() => {
   const colors = ['#d4e5ac', '#83bab5', '#b4a6cf'];
+  let shownIntervalMs = 0;
+  const setText = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
   const channels = {
     speed: [
       ['engRpm', 'Engine'],
@@ -22,19 +27,35 @@
       ['atfTemp', 'ATF °C']
     ]
   };
-  const capacity = 300,
-    samples = new Array(capacity);
+  // 600 samples is 30 s at 20 Hz. Only the charted fields are kept, derived from
+  // `channels` above so adding a channel cannot silently stop recording it: a full
+  // telemetry copy per sample held ~60 fields to draw 11, and doubling the buffer
+  // on top of that would have been a megabyte of phone memory for nothing.
+  const capacity = 600,
+    samples = new Array(capacity),
+    KEEP = [...new Set(Object.values(channels).flat().map(([key]) => key))];
   let head = 0,
     count = 0,
     trace = null,
     dirty = true;
   TCU.events.addEventListener('telemetry', e => {
     const d = e.detail;
-    samples[head] = {
-      ...d,
-      atfTemp: d.atfMeasuredC ?? (d.atfSignalOk === true ? d.atfTemp : null),
-      t: performance.now()
+    const kept = {
+      t: performance.now(),
+      phase: d.phase
     };
+    for (const key of KEEP) kept[key] = d[key];
+    kept.atfTemp = d.atfMeasuredC ?? (d.atfSignalOk === true ? d.atfTemp : null);
+    samples[head] = kept;
+    // The window length follows the controller's rate rather than being restated
+    // in the markup, where it had already drifted once.
+    if (d.intervalMs && d.intervalMs !== shownIntervalMs) {
+      shownIntervalMs = d.intervalMs;
+      const secs = Math.round(capacity * d.intervalMs / 1000);
+      setText('chart-window', secs + ' SECOND WINDOW');
+      setText('chart-span', '−' + secs + ' s');
+      setText('chart-live-opt', 'Live · ' + secs + ' s');
+    }
     head = (head + 1) % capacity;
     count = Math.min(count + 1, capacity);
     dirty = true;
