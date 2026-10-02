@@ -26,6 +26,15 @@ enum DtcCode : uint8_t {
 
 const char* dtcName(uint8_t code);
 
+// One coherent copy of the whole store. Core 1 writes these arrays while Core 0
+// serializes them, so reading them field-by-field could mix pre- and post-clearAll
+// state in a single reply. Take a snapshot, then serialize outside the lock.
+struct DtcSnapshot {
+    uint16_t count[DTC_COUNT];
+    bool     active[DTC_COUNT];
+    uint32_t last_ms[DTC_COUNT];
+};
+
 class DtcManager {
   private:
     Preferences prefs;
@@ -34,6 +43,9 @@ class DtcManager {
     uint32_t _last_ms[DTC_COUNT];   // last assertion time, millis (session only)
     volatile bool _dirty = false;
     unsigned long _last_flush_ms = 0;
+    // Guards the three arrays above. Core 1 trips/edges them, Core 0 persists and
+    // serves them. Held only for bounded POD copies — never across an NVS write.
+    portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;
 
   public:
     void begin();
@@ -43,10 +55,8 @@ class DtcManager {
     void clearAll();                     // zero counts + persist (web "clear codes")
     void processFlush();                 // Core 0: persist counts (throttled for NVS wear)
 
-    uint16_t count(uint8_t i)  const { return (i < DTC_COUNT) ? _count[i]   : 0; }
-    bool     active(uint8_t i) const { return (i < DTC_COUNT) ? _active[i]  : false; }
-    uint32_t lastMs(uint8_t i) const { return (i < DTC_COUNT) ? _last_ms[i] : 0; }
-    uint8_t  activeCount() const;
+    DtcSnapshot snapshot();              // coherent copy for Core 0 serialization
+    uint8_t  activeCount();
 };
 
 extern DtcManager dtcManager;

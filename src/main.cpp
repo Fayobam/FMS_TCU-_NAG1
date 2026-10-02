@@ -111,11 +111,20 @@ void core1PhysicsTask(void *pvParameters) {
         dtcManager.poll();         // edge the fault flags into the DTC store
         controlBridge.publish(adaptives); // coherent read-only snapshot at 10 Hz
 
-        // Loop-overrun watchdog: the 1 kHz budget is 1000us. If the work block runs
-        // long it silently stretches every shift phase's wall-clock — log it (rate-limited).
-        if ((micros() - t0) > 1500 && (millis() - lastOverrunLog) > 1000) {
-            dtcManager.trip(DTC_LOOP_OVERRUN);
-            lastOverrunLog = millis();
+        // Loop-overrun accounting. The 1 kHz budget is 1000 us; running long silently
+        // stretches every shift phase's wall-clock. The DTC stays on the hard case and
+        // stays rate-limited, but the counters are cheap and unthrottled, so a stall
+        // that happens once an hour is still visible after the fact.
+        uint32_t elapsed = micros() - t0;
+        if (elapsed > telemetry.loop_max_us) telemetry.loop_max_us = elapsed;
+        if (elapsed > 1500) {
+            telemetry.loop_overrun_hard++;
+            if ((millis() - lastOverrunLog) > 1000) {
+                dtcManager.trip(DTC_LOOP_OVERRUN);
+                lastOverrunLog = millis();
+            }
+        } else if (elapsed > 1000) {
+            telemetry.loop_overrun_soft++;
         }
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }

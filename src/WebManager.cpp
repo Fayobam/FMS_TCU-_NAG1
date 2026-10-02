@@ -234,13 +234,14 @@ void WebManager::sendDtcs() {
     JsonDocument resp;
     resp["type"] = "dtc_data";
     JsonArray arr = resp["dtcs"].to<JsonArray>();
+    DtcSnapshot dtc = dtcManager.snapshot();   // coherent: Core 1 writes while we serialize
     for (uint8_t i = 0; i < DTC_COUNT; i++) {
         JsonObject o = arr.add<JsonObject>();
         o["code"]   = i;
         o["name"]   = dtcName(i);
-        o["count"]  = dtcManager.count(i);
-        o["active"] = dtcManager.active(i);
-        o["lastMs"] = dtcManager.lastMs(i);
+        o["count"]  = dtc.count[i];
+        o["active"] = dtc.active[i];
+        o["lastMs"] = dtc.last_ms[i];
     }
     String out;
     serializeJson(resp, out);

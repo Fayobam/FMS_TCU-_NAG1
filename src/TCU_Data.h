@@ -420,6 +420,15 @@ struct TCU_Telemetry {
     uint8_t shift_class  = 0;     // mirrors ShiftClass for the active/last shift
     uint8_t pd_type      = 0;     // mirrors PowerDownType when class is SC_POWER_DOWN
     bool    torque_cut_active = false;  // rusEFI shift-retard window asserted (Phase 5)
+
+    // --- Control-loop timing (Core 1). The 1 kHz budget is 1000 us. ---
+    // Two counters, because the two cases mean different things: a soft overrun
+    // stretches phase resolution, a hard one is already DTC-worthy. loop_max_us is
+    // the high-water mark since boot — the only number that answers "can a stall
+    // outlast the 20 ms freshness windows the ATF-only selector authorizes on?"
+    uint32_t loop_overrun_soft = 0;   // ticks over 1000 us but at or under 1500
+    uint32_t loop_overrun_hard = 0;   // ticks over 1500 us (also trips DTC_LOOP_OVERRUN)
+    uint32_t loop_max_us       = 0;   // worst single iteration since boot
 };
 
 extern TCU_Telemetry telemetry;
@@ -486,14 +495,20 @@ inline float computeLoad(float tps_pct, float map_kpa) {
     // MAP lags actual torque by ~100-200ms (manifold fill time). To avoid the holding
     // pressure lagging behind torque delivery, TPS is weighted at 1.25× so the load
     // index responds as fast as the throttle moves, not as fast as MAP settles.
-    // At WOT + 1.2 bar boost: load = 125 + (120*0.8) = 221, constrained to 200 via loadToBin.
+    // At WOT + 1.2 bar boost (220 kPa abs): load = 125 + (120*0.8) = 221. Nothing
+    // clamps the load itself — loadToBin clamps the resulting BIN INDEX, so 221
+    // lands on bin 17 and saturates at 15. Anything from load 187.5 upward shares
+    // bin 15, which is worth knowing before reading adaptation cells back.
     float load = tps_pct * 1.25f;
     if (map_kpa > 100.0f) load += (map_kpa - 100.0f) * 0.8f;
     return load;
 }
 inline uint8_t loadToBin(float load) {
-    // 0..200 load mapped across 16 bins (~12.5 load units each) so 1.2 bar of
-    // boost spreads across several cells instead of saturating bin 15.
+    // ~12.5 load units per bin, so part-throttle and light boost spread across
+    // several cells instead of all landing in the top bin. Only the 0..187.5 range
+    // is actually resolved: above that the index clamp puts everything in bin 15,
+    // so boosted WOT does share one cell. Widening the bins would re-map every
+    // learned cell, so this stays as-is until adaptation is re-baselined.
     int bin = (int)(load / 12.5f);
     return (uint8_t)constrain(bin, 0, NUM_LOAD_BINS_SHARED - 1);
 }

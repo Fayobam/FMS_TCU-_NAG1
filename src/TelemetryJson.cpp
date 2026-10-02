@@ -68,6 +68,9 @@ void fillTelemetryJson(JsonDocument& doc, const ControlSnapshot& snap,
         doc["gear"] = nullptr; doc["tgt"] = nullptr;
         doc["expectedRatio"] = nullptr; doc["targetRatio"] = nullptr;
     }
+    doc["loopOverrunSoft"] = telemetry.loop_overrun_soft;
+    doc["loopOverrunHard"] = telemetry.loop_overrun_hard;
+    doc["loopMaxUs"] = telemetry.loop_max_us;
     doc["intervalMs"] = TCU_TELEMETRY_INTERVAL_MS;
     doc["heap"] = freeHeap;
     doc["fsOk"] = filesystemOk;
