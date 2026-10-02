@@ -2,7 +2,7 @@
 from pathlib import Path
 import json
 from package_web import bundle
-from web_fixtures import profile, params, network, telemetry
+from web_fixtures import profile, params, network, telemetry, dtc_names
 from preview_maps import extend
 import copy
 
@@ -11,9 +11,9 @@ ROOT=Path(__file__).resolve().parents[1]
 def build():
     fixtures=dict(profile=profile,params=extend(copy.deepcopy(params)),network=network,telemetry=telemetry,
         cells=[v for i in range(64) for v in (i%3-1,(i%5-2)*2,i%7-3)],
-        dtcs=[dict(code=i,name=name,count=0,active=False,lastMs=0) for i,name in enumerate([
-            'SPEED N2/N3 MISMATCH','SPEED HW INIT FAIL','TPS SIGNAL RAILED','MAP SIGNAL RAILED','LIMP: FATAL SLIP',
-            'REVERSE AT SPEED','OVERREV UPSHIFT','LOOP OVERRUN','SHIFT UNVERIFIED','TEST MODE USED'])])
+        # Names come from src/DtcManager.cpp so this cannot fall behind the firmware.
+        dtcs=[dict(code=i,name=name,count=0,active=False,lastMs=0)
+              for i,name in enumerate(dtc_names())])
     # Friendly simulated networks; no stored or real credentials enter this file.
     fixtures['network']={**network,'known':[{'ssid':'Workshop','secured':True},{'ssid':'Phone hotspot','secured':True}]}
     html=bundle(ROOT).decode('utf-8')

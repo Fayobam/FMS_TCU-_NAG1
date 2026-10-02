@@ -175,7 +175,11 @@
     ['mpc', 'MPC command · %'],
     ['spc', 'SPC command · %'],
     ['tccPwm', 'TCC duty · %'],
-    ['heap', 'Free heap · bytes']
+    ['heap', 'Free heap · bytes'],
+    ['tpsRocPctMs', 'Throttle rate · %/ms', 3],
+    ['loopMaxUs', 'Control loop peak · µs'],
+    ['loopOverrunSoft', 'Loop ticks over 1 ms'],
+    ['loopOverrunHard', 'Loop ticks over 1.5 ms']
   ]);
   metricGroup('bench-values', [
     ['tpsV', 'TPS input · V', 3],
