@@ -400,6 +400,59 @@ runs first in `update()` and returns early, so the mid-shift abort's
   from `f3762d1` is the measurement — read it after a drive before deciding
   whether the windows need widening.
 
+---
+
+## Direction: close loops on what is measurable  [2026-10-02, stated by the user]
+
+The governing principle, and the reason the pressure model was abandoned: this
+hardware has **no solenoid current sensing and no pressure transducer**, so any
+model that predicts pressure from duty cycle is unfalsifiable on this car. Effort
+spent there produced numbers nothing could check. **Ratio is measurable.** So is
+clutch speed. Those are where feedback belongs.
+
+Corollary, and the standing instruction: **ratio feedback and adaptation are to be
+ENABLED, not removed.** They are the mechanism for escaping hardcoded timings that
+would otherwise need tuning forever — per temperature, load, ATF age and clutch
+wear. Do not propose deleting them to reduce line count. The goal is simplicity of
+*structure*, not fewer capabilities: the code must stay followable, which means
+named constants over scattered literals, one owner per output, and one meaning per
+threshold.
+
+### Where the phase engine already observes rather than counts
+
+Worth knowing before anyone "adds" feedback that is already there:
+
+| Phase | Exit today |
+|---|---|
+| FILL (up) | **observed**: off-going clutch movement, `RATIO_EVENT_CONFIRM_MS`; timer is the fallback |
+| RELEASE (down) | **observed**: `live_ratio` within 0.05 of target + flat; `_release_backstop_ms` is the fallback |
+| CATCH / INERTIA completion | **observed**: `targetRatioConfirmed()`; backstop calls `abandonShift()` (F12) |
+| flare / bind | **observed**: ratio events |
+| PREP, LOCK, END | timed — hydraulic dead time and decay, nothing observable to close on. Leave timed. |
+| TORQUE | timed — **candidate**: exit on first ratio movement (the oncoming clutch taking torque) |
+| INERTIA ramp | timed — **this is the prize**, see below |
+
+### The INERTIA ramp is the item that ends perpetual tuning
+
+Today SPC rises on `frac = t / _inertia_target_ms`: a time ramp, so its correct
+value changes with ATF temperature, load and clutch wear, which is exactly the
+"tuning forever" trap. The ratio-rate loop replaces it — target a slip rate and
+modulate SPC to hold it — and then shift duration self-adjusts instead of being
+calibrated per condition. `ratioFeedbackLive()`, `_cl_err` and the ±25 trim ceiling
+already exist; the loop is off by default because its **sign and gain are not
+commissioned**, not because it is unwanted.
+
+**Path to enabling it, cheapest risk first:**
+1. Drive with `shiftTrace` capture on. It already records t/ph/spc/mpc/ratio/eng/
+   turb/out/clErr/flare/onClutch/offClutch — precisely the signals needed.
+2. Fit sign and gain offline from those traces. No car involved.
+3. **Replay a recorded trace through the host harness.** `test/stubs/Arduino.h`
+   makes time a variable, so a real shift can be re-run deterministically and the
+   loop validated before it ever commands a solenoid. This step is why the harness
+   was worth building.
+4. Enable on the bench with the trim ceiling held low; raise it as traces confirm
+   the response. Adaptation then learns on top of a loop that is already stable.
+
 ## Done
 
 - F1, F2, F3, F4 (2026-07-01) — see entries above.
